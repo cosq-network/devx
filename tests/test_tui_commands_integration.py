@@ -111,8 +111,8 @@ def test_session_switch_rehydrates_transcript_through_tui(monkeypatch, tmp_path:
         async with DevTUI(session_id="default").run_test() as pilot:
             await submit_command(pilot, "/session use saved-session")
             assert pilot.app.session_id == "saved-session"
-            assert "user: Implement the feature" in pilot.app.query_one("#chat-view").text
-            assert "assistant: Feature implemented" in pilot.app.query_one("#chat-view").text
+            assert "user: Implement the feature" in pilot.app.chat_text
+            assert "assistant: Feature implemented" in pilot.app.chat_text
             assert str(pilot.app.query_one("#session-text").render()) == "session: saved-session"
 
     asyncio.run(run())

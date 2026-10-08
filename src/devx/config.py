@@ -49,13 +49,14 @@ class Settings:
     command_timeout: float = 120.0
     test_command: str = ""
     max_file_bytes: int = 1_000_000
-    max_context_files: int = 5
+    max_context_files: int = 15
     lint_command: str = ""
     embeddings_enabled: bool = False
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_cache_dir: Path = field(default_factory=lambda: Path.home() / ".cache" / "devx" / "embeddings")
-    embeddings_offline: bool = False
+    embeddings_offline: bool = True
     tracing_enabled: bool = False
+    auto_context: bool = True
     permission_rules: tuple[dict[str, str], ...] = ()
     plugin_paths: tuple[str, ...] = ()
     mcp_servers: tuple[dict[str, Any], ...] = ()
@@ -100,7 +101,12 @@ class Settings:
             return default
 
         def boolean(name: str, default: bool, legacy_name: str | None = None) -> bool:
-            return get(name, str(default), legacy_name).lower() in {"1", "true", "yes", "on"}
+            value = get(name, str(default), legacy_name).strip().lower()
+            if value in {"1", "true", "yes", "on"}:
+                return True
+            if value in {"0", "false", "no", "off"}:
+                return False
+            raise ValueError(f"{name} must be a boolean value")
 
         root = (workspace or Path(get("DEVX_WORKSPACE", str(cwd), "DEV_WORKSPACE"))).expanduser().resolve()
         if root != workspace_hint.expanduser().resolve():
@@ -149,7 +155,8 @@ class Settings:
                 str(Path.home() / ".cache" / "devx" / "embeddings"),
                 "DEV_EMBEDDING_CACHE_DIR",
             )).expanduser(),
-            embeddings_offline=boolean("DEVX_EMBEDDINGS_OFFLINE", False, "DEV_EMBEDDINGS_OFFLINE"),
+embeddings_offline=boolean("DEVX_EMBEDDINGS_OFFLINE", True, "DEV_EMBEDDINGS_OFFLINE"),
+            auto_context=boolean("DEVX_AUTO_CONTEXT", True, "DEV_AUTO_CONTEXT"),
             tracing_enabled=boolean("LANGSMITH_TRACING", False),
             permission_rules=permission_rules,
             plugin_paths=tuple(str(item) for item in raw_plugins),

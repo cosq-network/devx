@@ -119,9 +119,17 @@ class SupervisorRunner:
             from devx.llm import create_llm
             model = create_llm(self.settings)
             context_paths = [self.policy.path(Path(path)) for path in state.files_in_context]
-            max_context_files = max(1, int(getattr(self.settings, "max_context_files", 5)))
+            max_context_files = max(1, int(getattr(self.settings, "max_context_files", 15)))
             selected_paths = context_paths
-            if len(context_paths) > max_context_files:
+            # Auto-discover project files when no explicit files provided
+            if not selected_paths and getattr(self.settings, "auto_context", True):
+                from devx.token_optim.context import discover_project_files
+                discovered = discover_project_files(self.settings.workspace, max_files=200)
+                if discovered:
+                    selected_paths = select_relevant_files(state.task, discovered, max_context_files, self.embedder)
+                    state.files_in_context = [str(path) for path in selected_paths]
+                    self._event(state, {"type": "context_auto_discovered", "files": state.files_in_context})
+            elif len(context_paths) > max_context_files:
                 selected_paths = select_relevant_files(state.task, context_paths, max_context_files, self.embedder)
                 state.files_in_context = [str(path) for path in selected_paths]
                 self._event(state, {"type": "context_selected", "files": [str(path) for path in selected_paths]})

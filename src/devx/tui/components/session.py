@@ -4,9 +4,12 @@ import sqlite3
 from typing import TYPE_CHECKING
 
 try:
-    from textual.widgets import Static
+    from textual.widgets import RichLog, Static
 except ImportError:
-    Static = object
+    class RichLog:
+        pass
+    class Static:
+        pass
 
 if TYPE_CHECKING:
     from devx.tui.app import DevTUI
@@ -48,8 +51,10 @@ class SessionManager:
             for message in messages
             if isinstance(message, dict) and isinstance(message.get("content"), str)
         ]
-        panel = self.app.query_one("#chat-view", Static)
-        panel.text = "\n".join(self.app._transcript)
+        chat = self.app.query_one("#chat-view", RichLog)
+        chat.clear()
+        for line in self.app._transcript:
+            chat.write(line)
         self.app.query_one("#session-text", Static).update(f"session: {self.app.session_id}")
         self.app._write(f"Switched to session: {session['name']}")
 

@@ -251,6 +251,11 @@ class DevTUI(App):
     def _provider_choices(self) -> list[str]:
         return self.providers._provider_choices
 
+    @property
+    def chat_text(self) -> str:
+        """Return the current chat content as text (for test compatibility)."""
+        return "\n".join(self._transcript)
+
     def compose(self) -> ComposeResult:
         from devx.completion.suggester import CommandMentionSuggester
 
@@ -262,8 +267,12 @@ class DevTUI(App):
                     "Describe a task, reference files with @path, or use /help for commands.",
                     id="welcome-subtitle",
                 )
-            yield Static(
+            yield RichLog(
                 id="chat-view",
+                wrap=True,
+                highlight=True,
+                auto_scroll=True,
+                markup=True,
             )
             yield RichLog(
                 id="log-view",
@@ -359,9 +368,12 @@ class DevTUI(App):
 
     def _write(self, message: str) -> None:
         self._transcript.append(message)
-        panel = self.query_one("#chat-view", Static)
-        panel.text = "\n".join(self._transcript)  # type: ignore[attr-defined]
-        panel.scroll_end(animate=False)
+        try:
+            chat = self.query_one("#chat-view", RichLog)
+            chat.write(message)
+        except Exception:
+            # Fallback for when RichLog is not available
+            pass
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         value = event.value.strip()
@@ -445,7 +457,7 @@ class DevTUI(App):
             self._write(f"> {value}")
             self._run_active = True
             self._set_running(True)
-            self.run_worker(self.runner.ask(value), exclusive=False)
+            self.run_worker(self.runner.ask(value, plan_first=True), exclusive=False)
 
 
 if App is not object:

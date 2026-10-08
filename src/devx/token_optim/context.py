@@ -3,6 +3,40 @@ from __future__ import annotations
 from pathlib import Path
 
 
+CODE_EXTS = {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".kt", ".swift", ".cpp", ".cc", ".c", ".h", ".hpp", ".cs", ".php", ".rb", ".scala", ".clj", ".hs", ".ml", ".fs", ".vue", ".svelte", ".astro", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".md", ".txt", ".sql", ".sh", ".bash", ".zsh", ".fish", ".ps1", ".dockerfile", ".dockerignore", ".gitignore", ".env"}
+
+IGNORE_DIRS = {".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv", "venv", "env", "node_modules", "dist", "build", "target", "out", "bin", "obj", ".next", ".nuxt", ".svelte-kit", "coverage", ".coverage", "htmlcov", ".tox", ".nox", "site-packages", "vendor", "bower_components", "jspm_packages", "*.egg-info", ".eggs"}
+
+
+def _is_ignored(path: Path, workspace: Path) -> bool:
+    try:
+        rel = path.relative_to(workspace)
+    except ValueError:
+        return True
+    for part in rel.parts:
+        if part in IGNORE_DIRS or part.startswith("."):
+            return True
+    return False
+
+
+def discover_project_files(workspace: Path, max_files: int = 200) -> list[Path]:
+    """Discover code files in the workspace, respecting common ignore patterns."""
+    files: list[Path] = []
+    for candidate in workspace.rglob("*"):
+        if _is_ignored(candidate, workspace):
+            continue
+        if candidate.is_file() and candidate.suffix.lower() in CODE_EXTS:
+            try:
+                if candidate.stat().st_size > 1_000_000:
+                    continue
+            except OSError:
+                continue
+            files.append(candidate)
+            if len(files) >= max_files:
+                break
+    return sorted(files, key=lambda p: (len(p.parts), p.name.lower()))
+
+
 def select_relevant_files(query: str, candidate_files: list[Path], max_files: int = 5, embedder=None) -> list[Path]:
     """Select files deterministically; use optional embeddings when supplied."""
     if len(candidate_files) <= max_files:

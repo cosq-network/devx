@@ -193,9 +193,17 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
         if task in context_cache:
             return context_cache[task]
         selected = path_objects
-        max_context_files = max(1, int(getattr(settings, "max_context_files", 5)))
-        if len(path_objects) > max_context_files:
-            selected = select_relevant_files(task, path_objects, max_context_files, embedder)
+        max_context_files = max(1, int(getattr(settings, "max_context_files", 15)))
+        # Auto-discover project files when no explicit files provided
+        if not selected and getattr(settings, "auto_context", True):
+            from devx.token_optim.context import discover_project_files
+            discovered = discover_project_files(settings.workspace, max_files=200)
+            if discovered:
+                selected = select_relevant_files(task, discovered, max_context_files, embedder)
+                if event_sink:
+                    event_sink({"type": "context_auto_discovered", "files": [str(p) for p in selected]})
+        elif len(selected) > max_context_files:
+            selected = select_relevant_files(task, selected, max_context_files, embedder)
         context = read_context(selected, settings.max_file_bytes)
         fingerprint = ""
         if semantic_cache:

@@ -223,3 +223,26 @@ class ProviderSetupModal(ModalScreen):
             return
         self.done()
         self.dismiss()
+
+
+class PlanPreviewModal(ModalScreen):
+    """Modal to preview and confirm a generated plan before execution."""
+    def __init__(self, plan: str, done: Callable[[bool], None]):
+        super().__init__()
+        self.plan = plan
+        self.done = done
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="plan-preview-dialog"):
+            yield Label("Generated Plan", id="plan-title")
+            yield Static(self.plan, markup=False, id="plan-content")
+            with Horizontal(id="plan-actions"):
+                yield Button("Proceed", id="proceed", variant="primary")
+                yield Button("Cancel", id="cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "proceed":
+            self.done(True)
+        else:
+            self.done(False)
+        self.dismiss()
