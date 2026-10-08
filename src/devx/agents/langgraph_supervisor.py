@@ -278,6 +278,11 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
             state["status"] = "limit_exceeded"
             state["result"] = "Iteration limit reached before coding."
             return "finish"
+        # Use parallel coder for complex tasks (multiple files mentioned or large context)
+        task = state.get("task", "")
+        files_in_context = state.get("files_in_context", [])
+        if len(files_in_context) > 3 or ("multiple" in task.lower() or "several" in task.lower() or "batch" in task.lower()):
+            return "parallel_coder"
         return "coder"
 
     def coder(state: GraphState) -> GraphState:
@@ -323,6 +328,46 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
         emit(state, {"type": "agent_finished", "agent": "coder"})
         return state
 
+    def parallel_coder(state: GraphState) -> GraphState:
+        """Parallel coder that batches file reads using read_files tool."""
+        cancellation.raise_if_cancelled()
+        emit(state, {"type": "agent_started", "agent": "parallel_coder"})
+        task = state.get("task")
+        if not task:
+            raise ValueError("A task is required to run the supervisor graph")
+        
+        # Use the parallel coder agent with read_files tool
+        agent = build_coding_agent(settings, tools, approve, consume_tool_call, registry)
+        context = context_for(task)[0]
+        
+        prompt = (
+            "Execute this coding task efficiently. Use read_files to batch-read multiple files at once. "
+            "Make minimal changes and report exactly what happened.\n\nTask:\n" + task +
+            "\n\nPlan:\n" + state.get("plan", "") + "\n\nContext:\n" + context
+        )
+        requested_agent = state.get("requested_agent")
+        if requested_agent:
+            prompt += "\n\nRequested specialist perspective: " + requested_agent
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            if event_sink:
+                state["result"] = stream_agent_text(agent, messages, lambda event: emit(state, event))
+            else:
+                state["result"] = response_text(agent.invoke({"messages": messages}))  # type: ignore[arg-type]
+        except Exception as exc:
+            error_msg = str(exc)
+            if _is_rate_limit_error(exc):
+                error_msg = f"Rate limit exceeded: {error_msg}. Please wait and retry, or switch to a different model."
+            emit(state, {"type": "agent_error", "agent": "parallel_coder", "error": error_msg})
+            state["status"] = "failed"
+            state["result"] = f"Parallel coder failed: {error_msg}"
+            return state
+        append_state_message(state, "parallel_coder", state["result"])
+        state["active_agent"] = "tester"
+        state["iteration"] = state.get("iteration", 0) + 1
+        emit(state, {"type": "agent_finished", "agent": "parallel_coder"})
+        return state
+
     def route_after_coder(state: GraphState) -> str:
         if state.get("iteration", 0) >= settings.max_iterations:
             state["status"] = "limit_exceeded"
@@ -340,7 +385,58 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
         state["status"] = "running"
         lint_command = state.get("lint_command") or getattr(settings, "lint_command", "")
         state["lint_command"] = lint_command or ""
-        if lint_command:
+        
+        # Run lint and tests in parallel when both are configured
+        
+        if lint_command and command:
+            # Both lint and test configured - run in parallel
+            import threading
+            lint_result_holder = {"result": None}
+            test_result_holder = {"result": None}
+            
+            def run_lint():
+                if not approve("command", lint_command, "Configured lint command."):
+                    lint_result_holder["result"] = ("denied", "Lint execution denied by user.")
+                else:
+                    result = tools.run(lint_command, approved=True)
+                    lint_result_holder["result"] = ("ok" if result.ok else "failed", result.output or f"exit code: {result.exit_code}")
+            
+            def run_test():
+                if not approve("command", command, "Detected/configured project test command."):
+                    test_result_holder["result"] = ("denied", "Test execution denied by user.")
+                else:
+                    result = tools.run(command, approved=True)
+                    test_result_holder["result"] = ("ok" if result.ok else "failed", result.output or f"exit code: {result.exit_code}")
+            
+            lint_thread = threading.Thread(target=run_lint)
+            test_thread = threading.Thread(target=run_test)
+            lint_thread.start()
+            test_thread.start()
+            lint_thread.join()
+            test_thread.join()
+            
+            lint_status, lint_output = lint_result_holder["result"]
+            test_status, test_output = test_result_holder["result"]
+            
+            state["lint_result"] = lint_output
+            emit(state, {"type": "lint_finished", "ok": lint_status == "ok", "exit_code": 0 if lint_status == "ok" else 1})
+            
+            if lint_status == "denied" or lint_status == "failed":
+                state["test_result"] = "Lint failed:\n" + lint_output
+                state["status"] = "tests_failed"
+            elif test_status == "denied":
+                state["test_result"] = test_output
+                state["status"] = "completed"
+            elif test_status == "failed":
+                state["test_result"] = test_output
+                state["status"] = "tests_failed"
+                state["repair_attempts"] = state.get("repair_attempts", 0)
+            else:
+                state["test_result"] = test_output
+                state["status"] = "completed"
+                emit(state, {"type": "test_finished", "ok": True, "exit_code": 0})
+        elif lint_command:
+            # Only lint
             if not approve("command", lint_command, "Configured lint command."):
                 state["lint_result"] = "Lint execution denied by user."
             else:
@@ -350,21 +446,24 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
                 if not lint_result.ok:
                     state["test_result"] = "Lint failed:\n" + state["lint_result"]
                     state["status"] = "tests_failed"
-        if state.get("status") == "tests_failed":
-            pass
-        elif not command:
+                else:
+                    state["status"] = "completed"
+        elif command:
+            # Only test
+            if not approve("command", command, "Detected/configured project test command."):
+                state["test_result"] = "Test execution denied by user."
+                state["status"] = "completed"
+            else:
+                result = tools.run(command, approved=True)
+                state["test_result"] = result.output or f"exit code: {result.exit_code}"
+                state["status"] = "completed" if result.ok else "tests_failed"
+                emit(state, {"type": "test_finished", "ok": result.ok, "exit_code": result.exit_code})
+                if not result.ok:
+                    state["repair_attempts"] = state.get("repair_attempts", 0)
+        else:
             state["test_result"] = "No test command detected."
             state["status"] = "completed"
-        elif not approve("command", command, "Detected/configured project test command."):
-            state["test_result"] = "Test execution denied by user."
-            state["status"] = "completed"
-        else:
-            result = tools.run(command, approved=True)
-            state["test_result"] = result.output or f"exit code: {result.exit_code}"
-            state["status"] = "completed" if result.ok else "tests_failed"
-            emit(state, {"type": "test_finished", "ok": result.ok, "exit_code": result.exit_code})
-            if not result.ok:
-                state["repair_attempts"] = state.get("repair_attempts", 0)
+        
         append_state_message(state, "tester", state.get("test_result", ""))
         state["active_agent"] = "supervisor"
         state["status"] = state.get("status", "completed")
@@ -385,10 +484,12 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
     graph = StateGraph(GraphState)
     graph.add_node("planner", planner)
     graph.add_node("coder", coder)
+    graph.add_node("parallel_coder", parallel_coder)
     graph.add_node("tester", tester)
     graph.add_edge(START, "planner")
-    graph.add_conditional_edges("planner", route_after_planner, {"coder": "coder", "finish": END})
+    graph.add_conditional_edges("planner", route_after_planner, {"coder": "coder", "parallel_coder": "parallel_coder", "finish": END})
     graph.add_conditional_edges("coder", route_after_coder, {"tester": "tester", "finish": END})
+    graph.add_conditional_edges("parallel_coder", route_after_coder, {"tester": "tester", "finish": END})
     graph.add_conditional_edges("tester", route_after_tester, {"repair": "coder", "finish": END})
     try:
         import sqlite3

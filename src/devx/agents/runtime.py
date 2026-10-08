@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -122,6 +123,28 @@ def build_coding_agent(
         return tools.read(path).output
 
     @tool
+    def read_files(paths: list[str]) -> str:
+        """Read multiple UTF-8 text files in parallel. Returns concatenated results with file headers."""
+        consume_tool_call()
+        if not paths:
+            return "ERROR: no paths provided"
+        
+        results = []
+        max_workers = min(len(paths), 8)  # Cap parallelism
+        
+        def read_one(path: str) -> tuple[str, str]:
+            result = tools.read(path)
+            return path, result.output if result.ok else f"ERROR: {result.output}"
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_path = {executor.submit(read_one, path): path for path in paths}
+            for future in as_completed(future_to_path):
+                path, output = future.result()
+                results.append(f"\n--- {path} ---\n{output}")
+        
+        return "".join(results)
+
+    @tool
     def search_files(query: str, path: str = ".") -> str:
         """Search text files inside the workspace."""
         consume_tool_call()
@@ -230,6 +253,7 @@ def build_coding_agent(
     registry = registry or build_tool_registry(settings, approve)
     builtins = {
         "read_file": read_file,
+        "read_files": read_files,
         "search_files": search_files,
         "write_file": write_file,
         "replace_in_file": replace_in_file,
@@ -323,3 +347,80 @@ def response_text(result: dict[str, Any]) -> str:
     if isinstance(content, list):
         return "".join(item.get("text", str(item)) if isinstance(item, dict) else str(item) for item in content)
     return str(content)
+
+
+async def run_tools_parallel(
+    tool_calls: list[tuple[str, dict]],
+    tools: WorkspaceTools,
+    approve: Callable[[str, str, str], bool] | None = None,
+    max_parallel: int = 4,
+) -> list[dict]:
+    """Run multiple tool calls in parallel.
+    
+    Args:
+        tool_calls: List of (tool_name, arguments) tuples
+        tools: WorkspaceTools instance
+        approve: Approval callback
+        max_parallel: Maximum parallel executions
+    
+    Returns:
+        List of results with keys: tool, arguments, result, error
+    """
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    
+    async def run_one(tool_name: str, args: dict) -> dict:
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            try:
+                if tool_name == "read_file":
+                    path = args.get("path", "")
+                    result = await loop.run_in_executor(executor, lambda: tools.read(path))
+                    return {"tool": tool_name, "arguments": args, "result": result.output if result.ok else None, "error": None if result.ok else result.output}
+                elif tool_name == "search_files":
+                    query = args.get("query", "")
+                    path = args.get("path", ".")
+                    result = await loop.run_in_executor(executor, lambda: tools.search(query, path))
+                    return {"tool": tool_name, "arguments": args, "result": result.output if result.ok else None, "error": None if result.ok else result.output}
+                elif tool_name == "write_file":
+                    path = args.get("path", "")
+                    content = args.get("content", "")
+                    if not path:
+                        return {"tool": tool_name, "arguments": args, "result": None, "error": "missing path"}
+                    preview = tools.preview_write(path, content)
+                    if tools.requires_approval("edit", path) and approve and not approve("write", path, "Proposed diff:\n" + preview):
+                        return {"tool": tool_name, "arguments": args, "result": None, "error": "WRITE DENIED"}
+                    result = await loop.run_in_executor(executor, lambda: tools.write(path, content, approved=True))
+                    return {"tool": tool_name, "arguments": args, "result": result.output if result.ok else None, "error": None if result.ok else result.output}
+                elif tool_name == "run_command":
+                    command = args.get("command", "")
+                    if not command:
+                        return {"tool": tool_name, "arguments": args, "result": None, "error": "missing command"}
+                    if tools.requires_approval("shell", command) and approve and not approve("command", command, "The agent requested this project command."):
+                        return {"tool": tool_name, "arguments": args, "result": None, "error": "COMMAND DENIED"}
+                    result = await loop.run_in_executor(executor, lambda: tools.run(command, approved=True))
+                    return {"tool": tool_name, "arguments": args, "result": result.output if result.ok else None, "error": None if result.ok else result.output}
+                else:
+                    return {"tool": tool_name, "arguments": args, "result": None, "error": f"Unknown tool: {tool_name}"}
+            except Exception as exc:
+                return {"tool": tool_name, "arguments": args, "result": None, "error": str(exc)}
+    
+    semaphore = asyncio.Semaphore(max_parallel)
+    
+    async def run_with_semaphore(tool_name: str, args: dict) -> dict:
+        async with semaphore:
+            return await run_one(tool_name, args)
+    
+    tasks = [run_with_semaphore(name, args) for name, args in tool_calls]
+    return await asyncio.gather(*tasks)
+
+
+def run_tools_parallel_sync(
+    tool_calls: list[tuple[str, dict]],
+    tools: WorkspaceTools,
+    approve: Callable[[str, str, str], bool] | None = None,
+    max_parallel: int = 4,
+) -> list[dict]:
+    """Synchronous version of run_tools_parallel."""
+    import asyncio
+    return asyncio.run(run_tools_parallel(tool_calls, tools, approve, max_parallel))
