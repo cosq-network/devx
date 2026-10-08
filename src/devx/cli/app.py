@@ -151,11 +151,11 @@ if typer is not None:
 
     @app.command("session")
     def session_command(
-        action: str = typer.Argument(..., help="list, events, delete, rename, export, or import"),  # type: ignore[attr-defined]
+        action: str = typer.Argument(..., help="list, events, delete, rename, export, import, dlq, dlq-retry, dlq-remove"),  # type: ignore[attr-defined]
         identifier: str | None = typer.Argument(None),  # type: ignore[attr-defined]
         value: str | None = typer.Argument(None),  # type: ignore[attr-defined]
     ):
-        """Inspect, modify, export, or import a saved session."""
+        """Inspect, modify, export, or import a saved session. Manage dead letter queue."""
         store = SessionStore(Settings.load().session_db)
         if action == "list":
             for item in store.list_sessions():
@@ -179,8 +179,26 @@ if typer is not None:
                 typer.echo(store.import_session(Path(identifier), value))  # type: ignore[attr-defined]
             except (OSError, TypeError, ValueError) as exc:
                 raise typer.BadParameter(str(exc)) from exc  # type: ignore[attr-defined]
+        elif action == "dlq":
+            entries = store.get_dlq_entries(identifier)
+            if not entries:
+                typer.echo("No dead letter queue entries.")
+            else:
+                for entry in entries:
+                    typer.echo(f"ID: {entry['id']} | Session: {entry['session_id'][:8]} | Run: {entry['run_id'][:8]} | Retries: {entry['retry_count']} | {entry['created_at']}")
+                    typer.echo(f"  Error: {entry['error'][:200]}...")
+        elif action == "dlq-retry" and identifier:
+            entry = store.retry_dlq_entry(int(identifier))
+            if not entry:
+                raise typer.BadParameter(f"DLQ entry not found: {identifier}")  # type: ignore[attr-defined]
+            typer.echo(f"Retrying DLQ entry {identifier} for session {entry['session_id'][:8]}")
+            typer.echo(f"State keys: {list(entry['state'].keys())}")
+        elif action == "dlq-remove" and identifier:
+            if not store.remove_dlq_entry(int(identifier)):
+                raise typer.BadParameter(f"DLQ entry not found: {identifier}")  # type: ignore[attr-defined]
+            typer.echo(f"Removed DLQ entry {identifier}")
         else:
-            raise typer.BadParameter("Use: devx session list|events ID|delete ID|rename ID NAME|export ID PATH|import PATH [NAME]")  # type: ignore[attr-defined]
+            raise typer.BadParameter("Use: devx session list|events ID|delete ID|rename ID NAME|export ID PATH|import PATH [NAME]|dlq [SESSION]|dlq-retry ID|dlq-remove ID")  # type: ignore[attr-defined]
 
     @app.command()
     def doctor(

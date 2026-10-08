@@ -28,6 +28,11 @@ class SessionStore:
             conn.execute("""CREATE TABLE IF NOT EXISTS session_events (
                 id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, run_id TEXT NOT NULL,
                 event TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS dead_letter_queue (
+                id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, run_id TEXT NOT NULL,
+                error TEXT NOT NULL, state TEXT NOT NULL, metadata TEXT NOT NULL,
+                retry_count INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                last_retry_at TEXT)""")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=10)
@@ -130,3 +135,57 @@ class SessionStore:
         with self._connect() as conn:
             rows = conn.execute(query, args).fetchall()
         return [{"run_id": row[0], "event": json.loads(row[1]), "created_at": row[2]} for row in rows]
+
+    # Dead Letter Queue methods
+    def add_to_dlq(self, session_id: str, run_id: str, error: str, state: dict[str, Any], metadata: dict[str, Any] | None = None) -> int:
+        """Add a failed run to the dead letter queue."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """INSERT INTO dead_letter_queue(session_id, run_id, error, state, metadata)
+                   VALUES(?,?,?,?,?)""",
+                (session_id, run_id, error, json.dumps(state), json.dumps(metadata or {}))
+            )
+            return cursor.lastrowid
+
+    def get_dlq_entries(self, session_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        """Get dead letter queue entries, optionally filtered by session."""
+        query = "SELECT id, session_id, run_id, error, state, metadata, retry_count, created_at, last_retry_at FROM dead_letter_queue"
+        args: tuple[Any, ...] = ()
+        if session_id:
+            query += " WHERE session_id=?"
+            args = (session_id,)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        args += (limit,)
+        with self._connect() as conn:
+            rows = conn.execute(query, args).fetchall()
+        return [
+            {
+                "id": row[0],
+                "session_id": row[1],
+                "run_id": row[2],
+                "error": row[3],
+                "state": json.loads(row[4]),
+                "metadata": json.loads(row[5]),
+                "retry_count": row[6],
+                "created_at": row[7],
+                "last_retry_at": row[8],
+            }
+            for row in rows
+        ]
+
+    def retry_dlq_entry(self, dlq_id: int) -> dict[str, Any] | None:
+        """Mark a DLQ entry as retried and return its state for re-execution."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT session_id, run_id, state, metadata FROM dead_letter_queue WHERE id=?", (dlq_id,)).fetchone()
+            if not row:
+                return None
+            conn.execute(
+                "UPDATE dead_letter_queue SET retry_count=retry_count+1, last_retry_at=? WHERE id=?",
+                (datetime.now(UTC).isoformat(), dlq_id)
+            )
+        return {"session_id": row[0], "run_id": row[1], "state": json.loads(row[2]), "metadata": json.loads(row[3])}
+
+    def remove_dlq_entry(self, dlq_id: int) -> bool:
+        """Remove a DLQ entry after successful retry or manual cleanup."""
+        with self._connect() as conn:
+            return conn.execute("DELETE FROM dead_letter_queue WHERE id=?", (dlq_id,)).rowcount > 0
