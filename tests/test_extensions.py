@@ -1,9 +1,12 @@
 import json
 import sys
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
+from devx.agents.runtime import AgentDependencyError, build_tool_registry
 from devx.config import Settings
-from devx.harness.mcp import register_mcp_servers
+from devx.harness.mcp import MCPClient, MCPError, register_mcp_servers
 from devx.harness.permissions import PermissionError, PermissionPolicy
 from devx.harness.tool_registry import ToolRegistry, load_plugins
 from devx.harness.tools import WorkspaceTools
@@ -98,3 +101,53 @@ def test_stdio_mcp_server_discovers_and_calls_tools(tmp_path: Path):
     assert spec.handler is not None
     assert spec.handler(value="works") == "works"
     registry.close()
+
+
+def test_project_plugins_require_approval_before_import(tmp_path: Path):
+    marker = tmp_path / "imported.txt"
+    plugin = tmp_path / "tools.py"
+    plugin.write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('imported')\n"
+        "def register(registry):\n"
+        "    registry.register('safe_tool', lambda: 'ok')\n",
+        encoding="utf-8",
+    )
+    settings = SimpleNamespace(
+        workspace=tmp_path,
+        approval_required=True,
+        permission_rules=(),
+        plugin_paths=("tools.py",),
+        mcp_servers=(),
+        max_file_bytes=1000,
+    )
+
+    try:
+        build_tool_registry(settings)
+    except AgentDependencyError:
+        pass
+    else:
+        raise AssertionError("project plugins must require approval before import")
+    assert not marker.exists()
+
+    registry = build_tool_registry(settings, lambda *_args: True)
+    assert marker.read_text(encoding="utf-8") == "imported"
+    assert "safe_tool" in registry.names()
+    registry.close()
+
+
+def test_mcp_timeout_is_bounded(tmp_path: Path):
+    client = MCPClient(
+        "slow",
+        [sys.executable, "-c", "import time; time.sleep(10)"],
+        cwd=tmp_path,
+        timeout=0.1,
+    )
+    started = time.monotonic()
+    try:
+        client.list_tools()
+    except MCPError as exc:
+        assert "timed out" in str(exc)
+    else:
+        raise AssertionError("unresponsive MCP server must time out")
+    assert time.monotonic() - started < 2
+    client.close()

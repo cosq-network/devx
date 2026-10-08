@@ -62,7 +62,11 @@ def build_model_graph(settings: Any, files: list[str] | None = None) -> AgentGra
     from pathlib import Path
 
     from devx.harness.permissions import PermissionPolicy
-    policy = PermissionPolicy(settings.workspace, settings.approval_required)
+    policy = PermissionPolicy(
+        settings.workspace,
+        settings.approval_required,
+        getattr(settings, "permission_rules", ()),
+    )
     context = read_context([policy.path(Path(item)) for item in (files or [])], settings.max_file_bytes)
 
     def run(state: DevxState) -> DevxState:
@@ -73,7 +77,14 @@ def build_model_graph(settings: Any, files: list[str] | None = None) -> AgentGra
             from devx.agents.runtime import build_coding_agent, response_text
             from devx.harness.permissions import PermissionPolicy
             from devx.harness.tools import WorkspaceTools
-            agent = build_coding_agent(settings, WorkspaceTools(PermissionPolicy(settings.workspace)))
+            agent = build_coding_agent(
+                settings,
+                WorkspaceTools(PermissionPolicy(
+                    settings.workspace,
+                    settings.approval_required,
+                    getattr(settings, "permission_rules", ()),
+                )),
+            )
             content = response_text(agent.invoke({"messages": [{"role": "user", "content": prompt}]}))
         except (ImportError, RuntimeError):
             model = create_llm(settings)
@@ -88,9 +99,16 @@ def build_model_graph(settings: Any, files: list[str] | None = None) -> AgentGra
     return AgentGraph(run)
 
 
-def build_supervisor_graph(settings: Any, approvals: Any, files: list[str] | None = None, run_id: str | None = None,
-                           cancellation: Any = None, event_sink: Any = None, session_id: str | None = None,
-                           plan_only: bool = False) -> Any:
+def build_supervisor_graph(
+    settings: Any,
+    approvals: Any,
+    files: list[str] | None = None,
+    run_id: str | None = None,
+    cancellation: Any = None,
+    event_sink: Any = None,
+    session_id: str | None = None,
+    plan_only: bool = False,
+) -> Any:
     import uuid
 
     try:

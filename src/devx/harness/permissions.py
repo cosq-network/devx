@@ -58,6 +58,8 @@ COMMAND_WRAPPERS = {"env", "command", "exec", "nice", "nohup", "sudo", "busybox"
 INLINE_DESTRUCTIVE = re.compile(
     r"(?i)(?:os\.(?:remove|unlink|rmdir|system|popen)|shutil\.rmtree|"
     r"subprocess\.(?:run|popen|call|check_call|check_output)|"
+    r"(?:pathlib\.)?(?:PurePath|Path)\s*\([^)]*\)\s*\.\s*(?:unlink|rmdir|write_text|write_bytes|rename|replace)\s*\(|"
+    r"\bopen\s*\([^)]*,\s*[\"']([^\"']*[wax+][^\"']*)[\"']\s*\)|"
     r"(?:remove-item|del|erase|rmdir|shutdown|reboot)\b)"
 )
 

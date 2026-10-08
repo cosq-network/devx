@@ -1,10 +1,15 @@
-# Extensibility and session safety
+# Extensibility and Session Safety
 
 `devx` keeps extensions behind the same workspace and approval boundaries as
 its built-in tools. Configure extensions in the project-local
 `.devx/config.json`; secrets remain in `.env` or `~/.devx/config.env`.
 
-## Permission rules
+See also:
+- [Project Configuration](project-config.md) — Complete `.devx/config.json` schema
+- [Plugin Development](plugin-development.md) — Building custom Python tools
+- [MCP Server Development](mcp-development.md) — Integrating external MCP servers
+
+## Permission Rules
 
 Rules use three fields:
 
@@ -22,10 +27,12 @@ The default remains approval-required for edits and shell commands. A matching
 containment, destructive-command blocking, timeouts, output limits, and
 atomic/journaled writes remain active regardless of configuration.
 
-## Python plugins
+## Python Plugins
 
-Plugins are explicitly configured and must be inside the workspace. A plugin
-file or directory exports `register(registry)`:
+Plugins are explicitly configured and must be inside the workspace. Loading a
+plugin is executable code: the configured plugin path is approved before any
+plugin is imported. Plan-only runs do not load plugins or start MCP servers. A
+plugin file or directory exports `register(registry)`:
 
 ```python
 def register(registry):
@@ -45,7 +52,9 @@ Plugin imports are executable code, so they never load merely because a file
 exists. Configure them under `plugins`, and keep them reviewed like any other
 project code.
 
-## MCP servers
+**Full guide:** [Plugin Development](plugin-development.md)
+
+## MCP Servers
 
 MCP servers use explicit stdio command configuration:
 
@@ -62,12 +71,17 @@ MCP servers use explicit stdio command configuration:
 }
 ```
 
-`devx` initializes the server, discovers `tools/list`, and exposes each tool
-through the registry. Tool calls use `tools/call`. Server working directories
-must be inside the workspace, commands run without a shell, and MCP calls use
-the normal approval policy and tool-call budget.
+`devx` approves each configured server before starting it, then initializes
+the server, discovers `tools/list`, and exposes each tool through the
+registry. Tool calls use `tools/call`. Server working directories must be
+inside the workspace, commands run without a shell, and MCP calls use the
+normal approval policy and tool-call budget. MCP processes receive a minimal
+runtime environment plus explicitly configured variables; unrelated parent
+process secrets are not inherited.
 
-## Automatic compaction
+**Full guide:** [MCP Server Development](mcp-development.md)
+
+## Automatic Compaction
 
 Session messages are compacted locally when either the message count or
 character budget is exceeded. Older role-labelled messages become a bounded

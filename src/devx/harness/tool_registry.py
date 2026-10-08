@@ -46,12 +46,15 @@ class ToolRegistry:
         self._tools[clean_name] = spec
         return spec
 
-    def register_object(self, name: str, tool: Any, *, description: str = "") -> ToolSpec:
+    def register_object(self, name: str, tool: Any, *, description: str = "",
+                        permission_action: str | None = "plugin",
+                        approval_target: str | Callable[[dict[str, Any]], str] | None = None) -> ToolSpec:
         clean_name = name.strip()
         if clean_name in self._tools:
             raise ToolRegistryError(f"Tool already registered: {clean_name}")
         spec = ToolSpec(clean_name, description or getattr(tool, "description", clean_name),
-                        langchain_tool=tool)
+                        langchain_tool=tool, permission_action=permission_action,
+                        approval_target=approval_target)
         self._tools[clean_name] = spec
         return spec
 
@@ -80,7 +83,32 @@ class ToolRegistry:
         result: list[Any] = []
         for spec in self._tools.values():
             if spec.langchain_tool is not None:
-                result.append(spec.langchain_tool)
+                if before_call is None or spec.permission_action is None:
+                    result.append(spec.langchain_tool)
+                    continue
+
+                original = spec.langchain_tool
+
+                @wraps(getattr(original, "invoke", original))
+                def guarded_object(*args: Any, __tool: Any = original,
+                                   __spec: ToolSpec = spec, **kwargs: Any) -> Any:
+                    denial = before_call(__spec, kwargs) if before_call else None
+                    if denial:
+                        return denial
+                    payload: Any = kwargs
+                    if args:
+                        payload = args[0] if len(args) == 1 and not kwargs else (args, kwargs)
+                    invoke = getattr(__tool, "invoke", None)
+                    if not callable(invoke):
+                        raise ToolRegistryError(f"Registered tool {__spec.name!r} has no invoke method")
+                    return invoke(payload)
+
+                result.append(StructuredTool.from_function(
+                    func=guarded_object,
+                    name=spec.name,
+                    description=spec.description,
+                    args_schema=getattr(original, "args_schema", None),
+                ))
                 continue
             if spec.handler is None:
                 continue

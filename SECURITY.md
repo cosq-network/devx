@@ -2,7 +2,8 @@
 
 ## Defaults
 
-The agent requires approval for file writes and command execution by default.
+The agent requires approval for file writes, command execution, and project
+extension startup by default.
 Workspace paths are resolved and must remain inside the configured workspace.
 Shell execution uses argument arrays with `shell=False`, bounded output, timeouts,
 and process cleanup.
