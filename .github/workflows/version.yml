@@ -23,6 +23,9 @@ concurrency:
 jobs:
   version:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.set_version.outputs.version }}
+      is_release: ${{ steps.set_version.outputs.is_release }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,9 +35,17 @@ jobs:
         with:
           python-version: '3.12'
       - name: Calculate and apply branch version
+        id: set_version
         env:
           VERSION_BRANCH: ${{ inputs.branch || github.ref_name }}
-        run: python scripts/version.py --branch "$VERSION_BRANCH" --write
+        run: |
+          python scripts/version.py --branch "$VERSION_BRANCH" --write
+          # Determine if this is a release branch
+          if [[ "$VERSION_BRANCH" == release/* ]] || [[ "$VERSION_BRANCH" == hotfix/* ]]; then
+            echo "is_release=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_release=false" >> $GITHUB_OUTPUT
+          fi
       - name: Commit version changes
         run: |
           git config user.name "github-actions[bot]"
@@ -45,4 +56,24 @@ jobs:
           else
             git commit -m "chore: sync version for ${GITHUB_REF_NAME}"
             git push
-          fi
+
+  tag:
+    needs: version
+    if: needs.version.outputs.is_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create release tag
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${VERSION}" -m "Release v${VERSION}"
+          git push origin "v${VERSION}"
+        env:
+          VERSION: ${{ needs.version.outputs.version }}

@@ -1,0 +1,38 @@
+# Dependency Review Configuration
+# See: https://github.com/actions/dependency-review-action
+
+# Severity thresholds
+fail-on-severity: high
+
+# Allow specific licenses
+allow-licenses:
+  - MIT
+  - Apache-2.0
+  - BSD-2-Clause
+  - BSD-3-Clause
+  - ISC
+  - Python-2.0
+  - MPL-2.0
+  - Unicode-DFS-2016
+
+# Deny specific licenses
+deny-licenses:
+  - GPL-2.0
+  - GPL-3.0
+  - AGPL-3.0
+  - LGPL-2.1
+  - LGPL-3.0
+
+# Allow specific packages despite license
+allow-packages:
+  # Example: package with non-standard license but acceptable
+  # - "some-package@1.2.3"
+
+# Deny specific packages
+deny-packages: []
+
+# Fail on vulnerability severity
+fail-on-vulnerability-severity: high
+
+# Private package registries (if any)
+private-registries: []

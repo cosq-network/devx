@@ -19,18 +19,39 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt', '**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
       - name: Install development dependencies
         run: python -m pip install -c constraints.txt -e ".[dev,cli,tui,agent]"
       - name: Lint
         run: python -m ruff check src tests scripts
       - name: Compile
         run: python -m compileall -q src tests scripts
-      - name: Test
-        run: python -m pytest -q
+      - name: Test with coverage
+        run: python -m pytest -q --junitxml=test-results.xml --cov=src/devx --cov-report=xml --cov-report=term-missing
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.os }}-${{ matrix.python }}
+          path: test-results.xml
+          retention-days: 7
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-${{ matrix.os }}-${{ matrix.python }}
+          path: coverage.xml
+          retention-days: 7
       - name: Offline DX benchmark
         run: python scripts/benchmark.py
       - name: Dependency audit (pip-audit)
-        run: python -m pip install pip-audit && python -m pip_audit -r requirements-audit.txt || true
+        run: python -m pip install pip-audit && python -m pip_audit -r requirements-audit.txt
       - name: Static security scan (bandit)
         run: python -m pip install bandit && python -m bandit -r src -q
       - name: License policy scan
@@ -38,7 +59,7 @@ jobs:
       - name: Provider contract
         run: python -m pytest -q tests/test_provider_contract.py
       - name: Check for secrets
-        run: python -m pip install detect-secrets && detect-secrets scan --baseline .secrets.baseline || true
+        run: python -m pip install detect-secrets && detect-secrets scan --baseline .secrets.baseline
 
   package:
     runs-on: ubuntu-latest
@@ -47,6 +68,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt', '**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
       - run: python -m pip install build
       - run: python -m build
       - run: python -m pip install dist/*.whl
@@ -57,7 +85,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.24.0
         with:
           scan-type: 'fs'
           scan-ref: '.'
