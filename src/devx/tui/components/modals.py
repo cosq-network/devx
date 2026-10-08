@@ -1,0 +1,225 @@
+from __future__ import annotations
+
+import platform
+import shutil
+import subprocess
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from textual.app import App, ComposeResult
+    from textual.containers import Horizontal, Vertical
+    from textual.screen import ModalScreen
+    from textual.widgets import Button, Input, Label, Select, Static
+else:
+    try:
+        from textual.app import App, ComposeResult
+        from textual.containers import Horizontal, Vertical
+        from textual.screen import ModalScreen
+        from textual.widgets import Button, Input, Label, Select, Static
+    except ImportError:
+        class App:
+            pass
+        
+        class ComposeResult:
+            pass
+        
+        class Horizontal:
+            pass
+        
+        class Vertical:
+            pass
+        
+        class ModalScreen:
+            pass
+        
+        class Button:
+            pass
+        
+        class Input:
+            pass
+        
+        class Label:
+            pass
+        
+        class Select:
+            pass
+        
+        class Static:
+            pass
+
+if TYPE_CHECKING:
+    from devx.harness.approval import ApprovalDecision, ApprovalRequest
+
+
+def copy_to_clipboard(text: str) -> None:
+    """Copy text using a native clipboard command on the current platform."""
+    if not text:
+        raise RuntimeError("The transcript is empty.")
+    system = platform.system()
+    commands = {
+        "Windows": [["clip.exe"], ["clip"]],
+        "Darwin": [["pbcopy"]],
+        "Linux": [["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]],
+    }.get(system, [])
+    for command in commands:
+        if shutil.which(command[0]):
+            try:
+                subprocess.run(command, input=text, text=True, check=True, timeout=5)
+                return
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise RuntimeError(f"Unable to copy transcript with {command[0]}: {exc}") from exc
+    raise RuntimeError("No clipboard utility found. Install wl-copy, xclip, or xsel.")
+
+
+class ApprovalModal(ModalScreen):
+    def __init__(self, request: ApprovalRequest, done: Callable[[ApprovalDecision], None]):
+        super().__init__()
+        self.request, self.done = request, done
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="approval-dialog"):
+            yield Label(f"Approve {self.request.action}: {self.request.target}")
+            yield Label("Proposed action")
+            yield Static(self.request.reason[:12000], markup=False, id="approval-preview")
+            yield Button("Approve", id="approve")
+            yield Button("Deny", id="deny")
+            yield Button("Cancel run", id="cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        from devx.harness.approval import ApprovalDecision
+        decision = {
+            "approve": ApprovalDecision.APPROVE,
+            "deny": ApprovalDecision.DENY,
+            "cancel": ApprovalDecision.CANCEL,
+        }[event.button.id]
+        self.done(decision)
+        self.dismiss(decision)
+
+
+class SecretInputModal(ModalScreen):
+    def __init__(self, done: Callable[[str], None]):
+        super().__init__()
+        self.done = done
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="secret-dialog"):
+            yield Label("Enter API key (input is masked; it will not be shown in the conversation)")
+            yield Input(placeholder="API key", password=True, id="secret-input")
+            yield Button("Save", id="save")
+            yield Button("Cancel", id="cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "save":
+            value = self.query_one("#secret-input", Input).value
+            self.done(value)
+        self.dismiss()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "secret-input":
+            self.done(event.value)
+            self.dismiss()
+
+
+class ProviderSetupModal(ModalScreen):
+    def __init__(self, settings, done: Callable[[], None], *, first_time: bool = True):
+        super().__init__()
+        self.settings = settings
+        self.done = done
+        self.first_time = first_time
+
+    def compose(self) -> ComposeResult:
+        from devx.configuration import PROVIDERS, catalog_models
+
+        options = [(name.title(), name) for name in sorted(PROVIDERS)]
+        provider = self.settings.provider if self.settings.provider in PROVIDERS else "openrouter"
+        models = catalog_models(provider)
+        model_options = self._model_options(models)
+        selected_model = self.settings.model if self.settings.model in {item.identifier for item in models} else (
+            models[0].identifier if models else Select.BLANK
+        )
+        with Vertical(id="setup-dialog"):
+            title = "First-time provider setup" if self.first_time else "Provider and model setup"
+            help_text = (
+                "Configure a provider before starting your first agent run."
+                if self.first_time else "Choose a provider and coding model for future agent runs."
+            )
+            yield Label(title, id="setup-title")
+            yield Label(help_text, id="setup-help")
+            yield Select(options, value=provider, prompt="Provider", id="setup-provider")
+            yield Input(
+                value="" if self.settings.api_key == "sk-placeholder" else self.settings.api_key,
+                placeholder="API key (not required for Ollama)",
+                password=True,
+                id="setup-api-key"
+            )
+            yield Input(value=self.settings.base_url, placeholder="Base URL", id="setup-base-url")
+            yield Select(model_options, value=selected_model, prompt="Coding model", id="setup-model")
+            yield Label("", id="setup-error")
+            with Horizontal(id="setup-actions"):
+                yield Button("Save and continue", id="setup-save")
+                yield Button("Exit", id="setup-exit")
+
+    def on_mount(self) -> None:
+        self.query_one("#setup-provider", Select).focus()
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            event.stop()
+            self.dismiss()
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        from devx.configuration import PROVIDERS, catalog_models
+
+        if event.select.id != "setup-provider":
+            return
+        provider = str(event.value)
+        base_url = PROVIDERS.get(provider, {}).get("base_url", "")
+        if base_url:
+            self.query_one("#setup-base-url", Input).value = base_url
+        models = catalog_models(provider)
+        model_select = self.query_one("#setup-model", Select)
+        model_select.set_options(self._model_options(models))
+        model_select.value = models[0].identifier if models else Select.BLANK
+
+    @staticmethod
+    def _model_options(models) -> list[tuple[str, str]]:
+        return [
+            (f"{item.identifier}{' [free]' if item.free else ''}", item.identifier)
+            for item in models
+            if item.agent_ready
+        ]
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "setup-exit":
+            self.app.exit()
+            return
+        if event.button.id != "setup-save":
+            return
+        from devx.configuration import ConfigurationError, UserConfig
+
+        provider = str(self.query_one("#setup-provider", Select).value)
+        api_key = self.query_one("#setup-api-key", Input).value.strip()
+        base_url = self.query_one("#setup-base-url", Input).value.strip()
+        model_value = self.query_one("#setup-model", Select).value
+        model = "" if model_value in {None, Select.BLANK} else str(model_value).strip()
+        if provider == str(Select.BLANK):
+            self.query_one("#setup-error", Label).update("Select a provider.")
+            return
+        if provider != "ollama" and not api_key:
+            self.query_one("#setup-error", Label).update("Enter an API key, or choose Ollama for a local model.")
+            return
+        if not base_url or not model:
+            self.query_one("#setup-error", Label).update("Base URL and model are required.")
+            return
+        try:
+            workspace_env = self.settings.workspace / ".env"
+            config = UserConfig(workspace_env if workspace_env.is_file() else None)
+            config.set_provider(provider)
+            config.update({"DEVX_BASE_URL": base_url, "DEVX_MODEL": model})
+            if api_key:
+                config.set_api_key(api_key)
+        except (ConfigurationError, OSError) as exc:
+            self.query_one("#setup-error", Label).update(str(exc))
+            return
+        self.done()
+        self.dismiss()

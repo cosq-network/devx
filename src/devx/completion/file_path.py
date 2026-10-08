@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-try:
+if TYPE_CHECKING:
     from prompt_toolkit.completion import Completer, Completion
-except ImportError:  # pragma: no cover
-    Completer = object  # type: ignore[misc,assignment]
-
-    class Completion:  # type: ignore[no-redef]
-        def __init__(self, text: str, start_position: int = 0, display: str | None = None):
-            self.text = text
-            self.start_position = start_position
-            self.display = display or text
+else:
+    try:
+        from prompt_toolkit.completion import Completer, Completion
+    except ImportError:  # pragma: no cover
+        class Completer:
+            pass
+        
+        class Completion:
+            def __init__(self, text: str, start_position: int = 0, display: str | None = None):
+                self.text = text
+                self.start_position = start_position
+                self.display = display or text
 
 
 class FilePathCompleter(Completer):

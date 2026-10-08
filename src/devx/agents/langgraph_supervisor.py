@@ -19,7 +19,7 @@ from devx.harness.runtime import CancellationToken, RunCancelled
 from devx.harness.session import SessionStore
 from devx.harness.testing import detect_test_command
 from devx.harness.tools import WorkspaceTools
-from devx.llm import create_llm, invoke_with_retry
+from devx.llm import create_llm, invoke_with_retry, _is_rate_limit_error
 from devx.token_optim.compaction import append_message as compact_append_message
 from devx.token_optim.context import read_context, select_relevant_files
 
@@ -60,10 +60,21 @@ class ConfiguredGraph:
         try:
             return self.graph.invoke(state, config=self._config(config))
         except RunCancelled:
-            result = dict(state)
+            result: dict[str, Any] = dict(state)
             result["status"] = "cancelled"
             result["result"] = "Run cancelled by user."
-            result.setdefault("events", []).append({"type": "cancelled"})
+            events = result.setdefault("events", [])
+            events.append({"type": "cancelled"})
+            return result
+        except Exception as exc:
+            error_msg = str(exc)
+            if _is_rate_limit_error(exc):
+                error_msg = f"Rate limit exceeded: {error_msg}. Please wait and retry, or switch to a different model."
+            result: dict[str, Any] = dict(state)
+            result["status"] = "failed"
+            result["result"] = f"Agent run failed: {error_msg}"
+            events = result.setdefault("events", [])
+            events.append({"type": "agent_error", "error": error_msg})
             return result
 
     async def ainvoke(self, state: GraphState, config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -71,10 +82,21 @@ class ConfiguredGraph:
             try:
                 return await self.graph.ainvoke(state, config=self._config(config))
             except RunCancelled:
-                result = dict(state)
+                result: dict[str, Any] = dict(state)
                 result["status"] = "cancelled"
                 result["result"] = "Run cancelled by user."
-                result.setdefault("events", []).append({"type": "cancelled"})
+                events = result.setdefault("events", [])
+                events.append({"type": "cancelled"})
+                return result
+            except Exception as exc:
+                error_msg = str(exc)
+                if _is_rate_limit_error(exc):
+                    error_msg = f"Rate limit exceeded: {error_msg}. Please wait and retry, or switch to a different model."
+                result: dict[str, Any] = dict(state)
+                result["status"] = "failed"
+                result["result"] = f"Agent run failed: {error_msg}"
+                events = result.setdefault("events", [])
+                events.append({"type": "agent_error", "error": error_msg})
                 return result
         try:
             import aiosqlite
@@ -90,10 +112,21 @@ class ConfiguredGraph:
             try:
                 return await async_graph.ainvoke(state, config=self._config(config))
             except RunCancelled:
-                result = dict(state)
+                result: dict[str, Any] = dict(state)
                 result["status"] = "cancelled"
                 result["result"] = "Run cancelled by user."
-                result.setdefault("events", []).append({"type": "cancelled"})
+                events = result.setdefault("events", [])
+                events.append({"type": "cancelled"})
+                return result
+            except Exception as exc:
+                error_msg = str(exc)
+                if _is_rate_limit_error(exc):
+                    error_msg = f"Rate limit exceeded: {error_msg}. Please wait and retry, or switch to a different model."
+                result: dict[str, Any] = dict(state)
+                result["status"] = "failed"
+                result["result"] = f"Agent run failed: {error_msg}"
+                events = result.setdefault("events", [])
+                events.append({"type": "agent_error", "error": error_msg})
                 return result
 
 
@@ -117,7 +150,15 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
                            ),
                            max_bytes=settings.max_file_bytes, timeout=settings.command_timeout,
                            journal=journal, run_id=run_id, cancellation=cancellation)
-    registry = build_tool_registry(settings)
+
+    def approve(action: str, target: str, reason: str = "") -> bool:
+        return approvals.allows(run_id, action, target, reason)
+
+    registry = build_tool_registry(
+        settings,
+        approve,
+        load_extensions=not plan_only,
+    )
     tool_call_count = 0
     tool_call_lock = threading.Lock()
 
@@ -128,7 +169,11 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
             if tool_call_count > max(1, int(settings.max_tool_calls)):
                 raise AgentToolLimitExceeded(f"Tool-call limit exceeded ({settings.max_tool_calls})")
     paths = files or []
-    policy = PermissionPolicy(settings.workspace, settings.approval_required)
+    policy = PermissionPolicy(
+        settings.workspace,
+        settings.approval_required,
+        getattr(settings, "permission_rules", ()),
+    )
     path_objects = [policy.path(Path(path)) for path in paths]
     embedder = None
     semantic_cache = None
@@ -160,7 +205,8 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
         return context_cache[task]
 
     def emit(state: GraphState, event: dict[str, Any]) -> None:
-        state.setdefault("events", []).append(event)
+        events = state.setdefault("events", [])
+        events.append(event)
         if event_sink:
             event_sink(event)
         session_store.append_event(session_id or run_id, run_id, event)
@@ -194,9 +240,18 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
             state["plan"] = cached_plan
             emit(state, {"type": "cache_hit", "kind": "plan"})
         else:
-            response = invoke_with_retry(create_llm(settings), "Create a concrete coding plan. Do not edit files. "
+            try:
+                response = invoke_with_retry(create_llm(settings), "Create a concrete coding plan. Do not edit files. "
                                           f"Give special attention to the requested specialist perspective: {specialist}.\n\nTask:\n"
                                           + task + "\n\nContext:\n" + context)
+            except Exception as exc:
+                error_msg = str(exc)
+                if _is_rate_limit_error(exc):
+                    error_msg = f"Rate limit exceeded: {error_msg}. Please wait and retry, or switch to a different model."
+                emit(state, {"type": "agent_error", "agent": "planner", "error": error_msg})
+                state["status"] = "failed"
+                state["result"] = f"Planner failed: {error_msg}"
+                return state
             state["plan"] = str(getattr(response, "content", response))
             if semantic_cache:
                 semantic_cache.set("plan:" + task, state["plan"], context_fingerprint)
@@ -216,9 +271,6 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
             state["result"] = "Iteration limit reached before coding."
             return "finish"
         return "coder"
-
-    def approve(action: str, target: str, reason: str = "") -> bool:
-        return approvals.allows(run_id, action, target, reason)
 
     def coder(state: GraphState) -> GraphState:
         cancellation.raise_if_cancelled()
@@ -244,10 +296,19 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
         if requested_agent:
             prompt += "\n\nRequested specialist perspective: " + requested_agent
         messages = [{"role": "user", "content": prompt}]
-        if event_sink:
-            state["result"] = stream_agent_text(agent, messages, lambda event: emit(state, event))
-        else:
-            state["result"] = response_text(agent.invoke({"messages": messages}))
+        try:
+            if event_sink:
+                state["result"] = stream_agent_text(agent, messages, lambda event: emit(state, event))
+            else:
+                state["result"] = response_text(agent.invoke({"messages": messages}))  # type: ignore[arg-type]
+        except Exception as exc:
+            error_msg = str(exc)
+            if _is_rate_limit_error(exc):
+                error_msg = f"Rate limit exceeded: {error_msg}. Please wait and retry, or switch to a different model."
+            emit(state, {"type": "agent_error", "agent": "coder", "error": error_msg})
+            state["status"] = "failed"
+            state["result"] = f"Coder failed: {error_msg}"
+            return state
         append_state_message(state, "coder", state["result"])
         state["active_agent"] = "tester"
         state["iteration"] = state.get("iteration", 0) + 1
@@ -296,7 +357,7 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
             emit(state, {"type": "test_finished", "ok": result.ok, "exit_code": result.exit_code})
             if not result.ok:
                 state["repair_attempts"] = state.get("repair_attempts", 0)
-        append_state_message(state, "tester", state["test_result"])
+        append_state_message(state, "tester", state.get("test_result", ""))
         state["active_agent"] = "supervisor"
         state["status"] = state.get("status", "completed")
         emit(state, {"type": "agent_finished", "agent": "tester"})

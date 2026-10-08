@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import shlex
 import subprocess  # nosec B404 - MCP commands are explicit configuration and never use a shell.
@@ -21,19 +22,26 @@ class MCPClient:
     """Small stdio MCP client covering initialization, tool discovery, and calls."""
 
     def __init__(self, name: str, command: list[str], *, cwd: Path, env: dict[str, str] | None = None,
-                 timeout: float = 30.0):
+                 timeout: float = 30.0, max_output_bytes: int = 1_000_000):
         if not command:
             raise MCPError(f"MCP server {name!r} has an empty command")
         self.name, self.command, self.cwd = name, command, cwd
-        self.env, self.timeout = env or {}, timeout
+        self.env, self.timeout = env or {}, max(0.1, timeout)
+        self.max_output_bytes = max(1, max_output_bytes)
         self.process: subprocess.Popen[bytes] | None = None
         self._next_id = 1
         self._lock = threading.Lock()
+        self._responses: queue.Queue[bytes] = queue.Queue()
+        self._reader: threading.Thread | None = None
 
     def start(self) -> None:
         if self.process is not None:
             return
-        merged_env = os.environ.copy()
+        inherited_names = {
+            "PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "TEMP", "TMP",
+            "TMPDIR", "LANG", "LC_ALL", "PYTHONIOENCODING",
+        }
+        merged_env = {key: value for key, value in os.environ.items() if key in inherited_names}
         merged_env.update(self.env)
         try:
             self.process = subprocess.Popen(  # nosec B603 - shell=False and explicit configured argv.
@@ -44,6 +52,8 @@ class MCPClient:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
             )
+            self._reader = threading.Thread(target=self._read_stdout, daemon=True)
+            self._reader.start()
             self._request("initialize", {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
@@ -68,7 +78,7 @@ class MCPClient:
         if result.get("isError"):
             raise MCPError(str(result))
         if result.get("structuredContent") is not None:
-            return json.dumps(result["structuredContent"], ensure_ascii=False, default=str)
+            return self._bound(json.dumps(result["structuredContent"], ensure_ascii=False, default=str))
         content = result.get("content", [])
         output: list[str] = []
         for item in content if isinstance(content, list) else []:
@@ -76,7 +86,24 @@ class MCPClient:
                 output.append(str(item.get("text", "")))
             else:
                 output.append(json.dumps(item, ensure_ascii=False, default=str))
-        return "\n".join(output)
+        return self._bound("\n".join(output))
+
+    def _read_stdout(self) -> None:
+        process = self.process
+        if process is None or process.stdout is None:
+            return
+        try:
+            while True:
+                line = process.stdout.readline()
+                if not line:
+                    self._responses.put(b"")
+                    return
+                self._responses.put(line)
+        except (OSError, ValueError):
+            self._responses.put(b"")
+
+    def _bound(self, value: str) -> str:
+        return value.encode("utf-8")[:self.max_output_bytes].decode("utf-8", errors="replace")
 
     def _notify(self, method: str, params: dict[str, Any]) -> None:
         process = self.process
@@ -100,8 +127,16 @@ class MCPClient:
             }) + "\n").encode())
             process.stdin.flush()
             deadline = time.monotonic() + self.timeout
-            while time.monotonic() < deadline:
-                line = process.stdout.readline()
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self.close()
+                    raise MCPError(f"MCP server {self.name!r} timed out during {method}")
+                try:
+                    line = self._responses.get(timeout=remaining)
+                except queue.Empty as exc:
+                    self.close()
+                    raise MCPError(f"MCP server {self.name!r} timed out during {method}") from exc
                 if not line:
                     raise MCPError(f"MCP server {self.name!r} exited before responding")
                 try:
@@ -114,7 +149,6 @@ class MCPClient:
                     raise MCPError(str(message["error"]))
                 result = message.get("result", {})
                 return result if isinstance(result, dict) else {"value": result}
-            raise MCPError(f"MCP server {self.name!r} timed out during {method}")
 
     def close(self) -> None:
         process, self.process = self.process, None
@@ -144,21 +178,27 @@ def _schema_model(name: str, schema: Any) -> Any:
     if not isinstance(schema, dict):
         return None
     try:
-        from pydantic import create_model
+        from pydantic import create_model, Field
     except ImportError:
         return None
     properties = schema.get("properties", {})
     required = set(schema.get("required", []))
     if not isinstance(properties, dict):
         return None
-    fields: dict[str, tuple[Any, Any]] = {}
-    for field_name in properties:
+    fields: dict[str, Any] = {}
+    for field_name, prop_schema in properties.items():
+        if not isinstance(prop_schema, dict):
+            continue
         default = ... if field_name in required else None
-        fields[str(field_name)] = (Any, default)
-    return create_model(name, **fields)
+        if default is None:
+            fields[str(field_name)] = (Any, Field(default=None))
+        else:
+            fields[str(field_name)] = (Any, default)
+    return create_model(name, **fields)  # type: ignore[call-overload]
 
 
-def register_mcp_servers(workspace: Path, configs: Any, registry: ToolRegistry) -> list[str]:
+def register_mcp_servers(workspace: Path, configs: Any, registry: ToolRegistry, *,
+                         max_output_bytes: int = 1_000_000) -> list[str]:
     """Discover tools from explicitly configured stdio MCP servers."""
     if isinstance(configs, dict):
         configs = [dict(value, name=name) if isinstance(value, dict) else value for name, value in configs.items()]
@@ -179,7 +219,8 @@ def register_mcp_servers(workspace: Path, configs: Any, registry: ToolRegistry) 
             raise MCPError(f"MCP server cwd must be inside the workspace: {cwd}") from exc
         client = MCPClient(name, _command(raw.get("command")), cwd=cwd,
                            env={str(k): str(v) for k, v in (raw.get("env") or {}).items()},
-                           timeout=float(raw.get("timeout", 30)))
+                           timeout=float(raw.get("timeout", 30)),
+                           max_output_bytes=max_output_bytes)
         try:
             discovered = client.list_tools()
             registry.add_resource(client)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from devx.agents.graph import DevxState
 from devx.agents.runtime import (
@@ -19,14 +19,18 @@ from devx.harness.runtime import CancellationToken, RunCancelled
 from devx.harness.session import SessionStore
 from devx.harness.testing import detect_test_command
 from devx.harness.tools import WorkspaceTools
-from devx.llm import invoke_with_retry
+from devx.llm import invoke_with_retry, _is_rate_limit_error
 from devx.token_optim.compaction import append_message
 from devx.token_optim.context import read_context, select_relevant_files
+
+if TYPE_CHECKING:
+    from devx.config import Settings
+    from devx.token_optim.embeddings import LocalEmbedder
 
 
 @dataclass
 class SupervisorRunner:
-    settings: Any
+    settings: Settings
     approvals: ApprovalManager
     run_id: str = "run"
     cancellation: CancellationToken | None = None
@@ -45,7 +49,7 @@ class SupervisorRunner:
         self.sessions = SessionStore(self.settings.session_db)
         self.cancellation = self.cancellation or CancellationToken()
         assert self.cancellation is not None
-        self.embedder = None
+        self.embedder: LocalEmbedder | None = None
         if getattr(self.settings, "embeddings_enabled", False):
             try:
                 from devx.token_optim.embeddings import LocalEmbedder
@@ -56,10 +60,19 @@ class SupervisorRunner:
                 )
             except (ImportError, OSError, RuntimeError, ValueError):
                 self.embedder = None
-        self.tools = WorkspaceTools(policy, max_bytes=self.settings.max_file_bytes,
-                                    timeout=self.settings.command_timeout, run_id=self.run_id, journal=journal,
-                                    cancellation=self.cancellation)
-        self.registry = build_tool_registry(self.settings)
+        self.tools = WorkspaceTools(
+            policy,
+            max_bytes=self.settings.max_file_bytes,
+            timeout=self.settings.command_timeout,
+            run_id=self.run_id,
+            journal=journal,
+            cancellation=self.cancellation,
+        )
+        self.registry = build_tool_registry(
+            self.settings,
+            self._approve,
+            load_extensions=not self.plan_only,
+        )
         self._tool_calls = 0
 
     def _event(self, state: DevxState, event: dict[str, Any]) -> None:
@@ -113,10 +126,19 @@ class SupervisorRunner:
                 state.files_in_context = [str(path) for path in selected_paths]
                 self._event(state, {"type": "context_selected", "files": [str(path) for path in selected_paths]})
             context = read_context(selected_paths, self.settings.max_file_bytes)
-            plan_response = invoke_with_retry(model, 
-                "Create a concise, concrete coding plan. Identify files, intended changes, and tests. "
-                "Do not edit files.\n\nTask:\n" + state.task + "\n\nContext:\n" + context
-            )
+            try:
+                plan_response = invoke_with_retry(model, 
+                    "Create a concise, concrete coding plan. Identify files, intended changes, and tests. "
+                    "Do not edit files.\n\nTask:\n" + state.task + "\n\nContext:\n" + context
+                )
+            except Exception as exc:
+                error_msg = str(exc)
+                if _is_rate_limit_error(exc):
+                    error_msg = f"Rate limit exceeded: {error_msg}. Please wait and retry, or switch to a different model."
+                self._event(state, {"type": "agent_error", "agent": "planner", "error": error_msg})
+                state.status = "failed"
+                state.result = f"Planner failed: {error_msg}"
+                return state
             plan = getattr(plan_response, "content", str(plan_response))
             self._event(state, {"type": "agent_finished", "agent": "planner"})
             self._append_message(state, "planner", str(plan))
@@ -143,11 +165,20 @@ class SupervisorRunner:
                 + ("\n\nRequested specialist perspective: " + state.requested_agent
                    if state.requested_agent != "supervisor" else "")
             )}]
-            if self.event_sink:
-                coding_text = stream_agent_text(coder, coding_messages, lambda event: self._event(state, event))
-                coding = {"messages": [{"content": coding_text}]}
-            else:
-                coding = coder.invoke({"messages": coding_messages})
+            try:
+                if self.event_sink:
+                    coding_text = stream_agent_text(coder, coding_messages, lambda event: self._event(state, event))
+                    coding = {"messages": [{"content": coding_text}]}
+                else:
+                    coding = coder.invoke({"messages": coding_messages})  # type: ignore[arg-type]
+            except Exception as exc:
+                error_msg = str(exc)
+                if _is_rate_limit_error(exc):
+                    error_msg = f"Rate limit exceeded: {error_msg}. Please wait and retry, or switch to a different model."
+                self._event(state, {"type": "agent_error", "agent": "coder", "error": error_msg})
+                state.status = "failed"
+                state.result = f"Coder failed: {error_msg}"
+                return state
             self._append_message(state, "coder", response_text(coding))
             self._event(state, {"type": "agent_finished", "agent": "coder"})
             state.active_agent = "tester"
@@ -210,7 +241,7 @@ class SupervisorRunner:
                 repair = coder.invoke({"messages": [{"role": "user", "content": (
                     "The latest lint/test run failed. Inspect the failure, make a minimal approved fix, "
                     "and report the change.\n\nFailure:\n" + test_result
-                )}]})
+                )}]})  # type: ignore[arg-type]
                 self._append_message(state, "coder", response_text(repair))
                 lint_ok = run_lint()
                 if lint_ok is False:
