@@ -47,6 +47,7 @@ if typer is not None:
         prompt: str,
         session: str | None = typer.Option(None),  # type: ignore[attr-defined]
         json_output: bool = typer.Option(False, "--json"),  # type: ignore[attr-defined]
+        json_logs: bool = typer.Option(False, "--json-logs"),  # type: ignore[attr-defined]
         approve: bool = typer.Option(False, "--approve-all"),  # type: ignore[attr-defined]
         plan_only: bool = typer.Option(False, "--plan-only"),  # type: ignore[attr-defined]
         plan_first: bool = typer.Option(True, "--plan-first/--no-plan-first"),  # type: ignore[attr-defined]
@@ -55,7 +56,7 @@ if typer is not None:
         from devx.agents.graph import DevState, build_supervisor_graph
         from devx.completion.parser import parse_file_mentions
         from devx.harness.approval import ApprovalManager, ApprovalRequest
-        configure_logging()
+        configure_logging(json_output=json_logs)
         settings = Settings.load()
         settings.validate()
         configure_tracing(settings)
@@ -230,11 +231,12 @@ if typer is not None:
     @app.command()
     def health(
         json_output: bool = typer.Option(False, "--json"),  # type: ignore[attr-defined]
+        json_logs: bool = typer.Option(False, "--json-logs"),  # type: ignore[attr-defined]
     ):
         """Run health checks on all system components."""
         settings = Settings.load()
         settings.validate()
-        configure_logging(level=30)  # WARNING level for health checks
+        configure_logging(level=30, json_output=json_logs)  # WARNING level for health checks
         results = run_health_checks(settings)
         overall = get_overall_health(results)
 
@@ -481,3 +483,30 @@ if typer is not None:
         typer.echo(f"\nProject config: {project_config_path}")
         typer.echo(f"User config: {env_path}")
         typer.echo("\nRun 'devx doctor' to verify, then 'devx tui' or 'devx ask \"...\"' to start coding.")
+
+    @app.command()
+    def metrics(
+        format: str = typer.Option("prometheus", "--format", "-f", help="Output format: prometheus, json"),
+    ):
+        """Export metrics in Prometheus or JSON format."""
+        from devx.observability import get_metrics
+        
+        collector = get_metrics()
+        
+        if format == "prometheus":
+            typer.echo(collector.export_prometheus())
+        elif format == "json":
+            import json
+            metrics_data = []
+            for metric_list in collector.get_metrics():
+                for m in metric_list:
+                    metrics_data.append({
+                        "name": m.name,
+                        "value": m.value,
+                        "labels": m.labels,
+                        "timestamp": m.timestamp,
+                        "type": m.metric_type,
+                    })
+            typer.echo(json.dumps(metrics_data, indent=2))
+        else:
+            raise typer.BadParameter("Format must be 'prometheus' or 'json'")  # type: ignore[attr-defined]

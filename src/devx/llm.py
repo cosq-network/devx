@@ -388,3 +388,114 @@ def create_llm(settings: Settings) -> Any:
 def list_providers() -> list[str]:
     """List all registered provider names."""
     return sorted(_PROVIDERS.keys())
+
+
+@dataclass
+class TokenUsage:
+    """Token usage for a single LLM call."""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    model: str = ""
+    provider: str = ""
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass
+class TokenUsageStats:
+    """Aggregated token usage statistics."""
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    total_tokens: int = 0
+    call_count: int = 0
+    by_model: dict[str, dict[str, int]] = field(default_factory=dict)
+    by_provider: dict[str, dict[str, int]] = field(default_factory=dict)
+
+
+class TokenUsageTracker:
+    """Track token usage across LLM calls."""
+    
+    def __init__(self):
+        self._usage: list[TokenUsage] = []
+        self._lock = threading.Lock()
+    
+    def record(self, usage: TokenUsage) -> None:
+        """Record token usage from a call."""
+        with self._lock:
+            self._usage.append(usage)
+            # Update metrics
+            from devx.observability import increment_counter, observe_histogram
+            increment_counter("llm_tokens_input", usage.prompt_tokens, {"model": usage.model, "provider": usage.provider})
+            increment_counter("llm_tokens_output", usage.completion_tokens, {"model": usage.model, "provider": usage.provider})
+            observe_histogram("llm_call_duration_ms", 0, {"model": usage.model, "provider": usage.provider})  # Duration not tracked here
+    
+    def get_stats(self) -> TokenUsageStats:
+        """Get aggregated statistics."""
+        with self._lock:
+            stats = TokenUsageStats()
+            for u in self._usage:
+                stats.total_prompt_tokens += u.prompt_tokens
+                stats.total_completion_tokens += u.completion_tokens
+                stats.total_tokens += u.total_tokens
+                stats.call_count += 1
+                
+                # By model
+                if u.model not in stats.by_model:
+                    stats.by_model[u.model] = {"prompt": 0, "completion": 0, "total": 0}
+                stats.by_model[u.model]["prompt"] += u.prompt_tokens
+                stats.by_model[u.model]["completion"] += u.completion_tokens
+                stats.by_model[u.model]["total"] += u.total_tokens
+                
+                # By provider
+                if u.provider not in stats.by_provider:
+                    stats.by_provider[u.provider] = {"prompt": 0, "completion": 0, "total": 0}
+                stats.by_provider[u.provider]["prompt"] += u.prompt_tokens
+                stats.by_provider[u.provider]["completion"] += u.completion_tokens
+                stats.by_provider[u.provider]["total"] += u.total_tokens
+            
+            return stats
+    
+    def get_recent(self, limit: int = 100) -> list[TokenUsage]:
+        """Get recent token usage entries."""
+        with self._lock:
+            return self._usage[-limit:]
+    
+    def clear(self) -> None:
+        """Clear all recorded usage."""
+        with self._lock:
+            self._usage.clear()
+
+
+# Global token usage tracker
+_token_tracker = TokenUsageTracker()
+
+
+def get_token_tracker() -> TokenUsageTracker:
+    """Get the global token usage tracker."""
+    return _token_tracker
+
+
+def extract_token_usage(response: Any, model: str = "", provider: str = "") -> TokenUsage:
+    """Extract token usage from a LangChain response."""
+    usage = TokenUsage(model=model, provider=provider)
+    
+    # Try to get token usage from response
+    if hasattr(response, 'usage_metadata'):
+        metadata = response.usage_metadata
+        usage.prompt_tokens = metadata.get('input_tokens', 0)
+        usage.completion_tokens = metadata.get('output_tokens', 0)
+        usage.total_tokens = metadata.get('total_tokens', 0)
+    elif hasattr(response, 'response_metadata'):
+        metadata = response.response_metadata
+        if 'token_usage' in metadata:
+            tu = metadata['token_usage']
+            usage.prompt_tokens = tu.get('prompt_tokens', 0)
+            usage.completion_tokens = tu.get('completion_tokens', 0)
+            usage.total_tokens = tu.get('total_tokens', 0)
+    elif hasattr(response, 'llm_output') and response.llm_output:
+        token_usage = response.llm_output.get('token_usage', {})
+        usage.prompt_tokens = token_usage.get('prompt_tokens', 0)
+        usage.completion_tokens = token_usage.get('completion_tokens', 0)
+        usage.total_tokens = token_usage.get('total_tokens', 0)
+    
+    return usage

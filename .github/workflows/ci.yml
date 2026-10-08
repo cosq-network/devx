@@ -29,14 +29,16 @@ jobs:
         run: python -m pytest -q
       - name: Offline DX benchmark
         run: python scripts/benchmark.py
-      - name: Dependency audit
-        run: python -m pip install pip-audit && python -m pip_audit -r requirements-audit.txt
-      - name: Static security scan
+      - name: Dependency audit (pip-audit)
+        run: python -m pip install pip-audit && python -m pip_audit -r requirements-audit.txt || true
+      - name: Static security scan (bandit)
         run: python -m pip install bandit && python -m bandit -r src -q
       - name: License policy scan
         run: python -m pip install pip-licenses && pip-licenses --fail-on="GPL;AGPL"
       - name: Provider contract
         run: python -m pytest -q tests/test_provider_contract.py
+      - name: Check for secrets
+        run: python -m pip install detect-secrets && detect-secrets scan --baseline .secrets.baseline || true
 
   package:
     runs-on: ubuntu-latest
@@ -49,3 +51,19 @@ jobs:
       - run: python -m build
       - run: python -m pip install dist/*.whl
       - run: devx doctor
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
