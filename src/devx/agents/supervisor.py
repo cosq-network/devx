@@ -137,7 +137,8 @@ class SupervisorRunner:
             try:
                 plan_response = invoke_with_retry(model, 
                     "Create a concise, concrete coding plan. Identify files, intended changes, and tests. "
-                    "Do not edit files.\n\nTask:\n" + state.task + "\n\nContext:\n" + context
+                    "Do not edit files.\n\nTask:\n" + state.task + "\n\nContext:\n" + context,
+                    provider=self.settings.provider,
                 )
             except Exception as exc:
                 error_msg = str(exc)

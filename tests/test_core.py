@@ -78,6 +78,12 @@ def test_settings_loads_workspace_dotenv_with_environment_precedence(tmp_path: P
     assert settings.approval_required is False
 
 
+def test_invalid_boolean_configuration_is_rejected(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("DEVX_APPROVAL_REQUIRED", "definitely-not-a-boolean")
+    with pytest.raises(ValueError, match="DEVX_APPROVAL_REQUIRED"):
+        Settings.load(workspace=tmp_path)
+
+
 def test_settings_load_uses_runtime_default_paths():
     settings = Settings.load(workspace=Path.cwd())
     assert settings.session_db.name == "sessions.db"
@@ -100,6 +106,8 @@ def test_commands_are_gated_and_dangerous_commands_rejected(tmp_path: Path):
     assert not tools.run(["python", "-c", "print(1)"]).ok
     with pytest.raises(PermissionError):
         tools.run(["rm", "-rf", "."], approved=True)
+    with pytest.raises(PermissionError):
+        tools.run(["python", "-c", "from pathlib import Path; Path('x').unlink()"], approved=True)
 
 
 def test_approval_manager_defaults_to_deny_and_records_request():
@@ -154,7 +162,8 @@ def test_graph_has_bounded_result():
 def test_context_is_bounded_and_deterministic(tmp_path: Path):
     paths = []
     for name in ("one.py", "two.py", "three.py"):
-        path = tmp_path / name; path.write_text(name)
+        path = tmp_path / name
+        path.write_text(name)
         paths.append(path)
     assert len(select_relevant_files("one", paths, max_files=2)) == 2
     context = read_context(paths, max_total_bytes=10)
@@ -326,7 +335,7 @@ def test_fallback_supervisor_supports_plan_only(monkeypatch, tmp_path: Path):
     )
     monkeypatch.setattr(
         "devx.agents.supervisor.invoke_with_retry",
-        lambda _model, _prompt: SimpleNamespace(content="a safe plan"),
+        lambda _model, _prompt, **_kwargs: SimpleNamespace(content="a safe plan"),
     )
     settings = Settings(
         workspace=tmp_path,
@@ -354,7 +363,7 @@ def test_supervisor_applies_context_file_cap_without_embeddings(monkeypatch, tmp
     monkeypatch.setattr("devx.llm.create_llm", lambda _settings: object())
     monkeypatch.setattr(
         "devx.agents.supervisor.invoke_with_retry",
-        lambda _model, prompt: prompts.append(prompt) or SimpleNamespace(content="plan"),
+        lambda _model, prompt, **_kwargs: prompts.append(prompt) or SimpleNamespace(content="plan"),
     )
     settings = Settings(
         workspace=tmp_path,

@@ -251,7 +251,9 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
             try:
                 response = invoke_with_retry(create_llm(settings), "Create a concrete coding plan. Do not edit files. "
                                           f"Give special attention to the requested specialist perspective: {specialist}.\n\nTask:\n"
-                                          + task + "\n\nContext:\n" + context)
+                                          + task + "\n\nContext:\n" + context,
+                                          provider=settings.provider,
+                                          )
             except Exception as exc:
                 error_msg = str(exc)
                 if _is_rate_limit_error(exc):
