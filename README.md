@@ -120,27 +120,33 @@ Under the hood, `devx` uses a **LangGraph supervisor workflow** (planner → cod
 
 ## Installation
 
+### Dependency Architecture & `pyproject.toml`
+
+`devx` follows modern Python packaging standards (**PEP 517** and **PEP 621** via Hatchling). All dependencies, optional extras, and console entry points are declared directly in [`pyproject.toml`](pyproject.toml) rather than a legacy `requirements.txt`.
+
+- **Reproducible CI environments**: Pinned validated dependency versions are tracked in [`constraints.txt`](constraints.txt) (`pip install -c constraints.txt -e ".[all]"`).
+- **Vulnerability scanning**: Audited runtime dependencies are listed in [`requirements-audit.txt`](requirements-audit.txt).
+
 ### From source (recommended for development)
 
+Installing in editable mode (`-e`) links the command launcher directly to your local working directory, so changes to `src/devx` are immediately live across your system without reinstallation:
+
 ```bash
-pip install -e ".[agent,tui,cli]"
+# Recommended for core development (Agent runtime + TUI + CLI + SSH + Dev tools)
+pip install -e ".[agent,tui,cli,ssh,dev]"
+
+# Or install all optional dependencies:
+pip install -e ".[all]"
 ```
 
 ### Optional extras
-
-```bash
-# All optional dependencies
-pip install -e ".[all]"
-
-# Or pick specific extras:
-pip install -e ".[agent,anthropic,google,embeddings,tracing,dev]"
-```
 
 | Extra | Packages | Purpose |
 |---|---|---|
 | `agent` | langchain, langgraph, langgraph-checkpoint-sqlite, langchain-openai | Core agent runtime |
 | `tui` | textual | Textual TUI |
 | `cli` | typer | Typer CLI |
+| `ssh` | paramiko | Remote SSH/SFTP workspace support |
 | `openai` | langchain-openai | OpenAI provider |
 | `anthropic` | langchain-anthropic | Anthropic provider |
 | `google` | langchain-google-genai | Google provider |
@@ -149,6 +155,38 @@ pip install -e ".[agent,anthropic,google,embeddings,tracing,dev]"
 | `tracing` | langsmith | LangSmith tracing |
 | `dev` | pytest, pytest-cov, ruff, pyright | Development tools |
 | `all` | all of the above | Full installation |
+
+### Make `devx` command available on any directory
+
+Installing `devx` creates a console executable (`devx.exe` on Windows, `devx` on Linux/macOS) in your Python environment's `Scripts` or `bin` directory.
+
+- **Windows PowerShell**: Verify the command resolves globally:
+  ```powershell
+  where devx
+  ```
+  If not found, ensure Python's Scripts folder is in your User `PATH`:
+  ```powershell
+  $scriptsPath = "$env:LOCALAPPDATA\Programs\Python\Python313\Scripts"
+  $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
+  if (($currentPath -split ";") -notcontains $scriptsPath) {
+      [Environment]::SetEnvironmentVariable("Path", "$currentPath;$scriptsPath", "User")
+  }
+  ```
+- **Linux & macOS**: Ensure `~/.local/bin` or your active venv's `bin/` directory is in `$PATH`:
+  ```bash
+  export PATH="$HOME/.local/bin:$PATH"
+  which devx
+  ```
+
+### Building a standalone wheel
+
+To produce a production wheel artifact:
+```bash
+python -m pip install build
+python -m build
+# Installs from dist/
+pip install "dist/devx_coding_agent-0.2.0.dev0-py3-none-any.whl[all]"
+```
 
 ---
 

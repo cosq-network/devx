@@ -93,10 +93,31 @@ The selected extras provide:
 - `agent`: LangChain, LangGraph, synchronous/asynchronous SQLite checkpoint support, and the OpenAI-compatible model adapter.
 - `tui`: Textual for the terminal user interface.
 - `cli`: Typer for the `devx` command and subcommands.
+- `ssh`: Paramiko for remote SSH/SFTP workspace execution and SFTP file operations.
 - `dev`: pytest, coverage tooling, Ruff, and Pyright for development and validation.
 
 The command also installs the project's base dependencies, including the
 configuration/runtime libraries and `prompt-toolkit` for file completion.
+
+### Why is there no `requirements.txt` file?
+
+Modern Python projects (using **PEP 517** and **PEP 621** specifications) use [`pyproject.toml`](../pyproject.toml) as the single source of truth for dependencies and build configuration.
+
+1. **Declarative Extras vs Flat Lists**:  
+   Traditional `requirements.txt` files only support flat lists of packages. In contrast, `pyproject.toml` declares modular dependency groups (`[project.optional-dependencies]`) such as `[agent]`, `[tui]`, `[ssh]`, `[embeddings]`, and `[dev]`, allowing users to install only what they need (e.g., `pip install -e ".[cli]"` vs `pip install -e ".[all]"`).
+2. **Console Entry Point Definition**:  
+   `pyproject.toml` declares `[project.scripts] devx = "devx.cli.app:main"`, which tells build backends (Hatchling) to create the platform-specific `devx` console executable. A `requirements.txt` file cannot define entry points.
+3. **Reproducibility with `constraints.txt`**:  
+   Rather than locking versions inside a rigid `requirements.txt`, reproducible builds are achieved using [`constraints.txt`](../constraints.txt), which pins validated versions for CI and local consistency without obscuring the abstract dependency ranges in `pyproject.toml`.
+4. **Security Audits with `requirements-audit.txt`**:  
+   CI vulnerability scanners (e.g. `pip-audit`) use [`requirements-audit.txt`](../requirements-audit.txt) to audit optional runtime dependencies.
+
+If an external tool or container setup requires a flat `requirements.txt`, you can generate one on demand:
+```bash
+pip freeze > requirements.txt
+# or export direct dependencies using pip-tools:
+# pip-compile pyproject.toml --extra all -o requirements.txt
+```
 
 ### Why use the constraints file?
 
@@ -274,6 +295,30 @@ When invoking `devx` from another project, use the user-wide
 working directory as its workspace; change directories before invoking `devx`.
 The programmatic `Settings.load(workspace=...)` override is reserved for
 library callers and tests.
+
+## Building and distributing a standalone wheel
+
+While editable mode is best for local iterative coding, you can package `devx` into a self-contained wheel artifact:
+
+1. Install the PEP 517 build frontend:
+   ```bash
+   python -m pip install build
+   ```
+2. Build wheel and source distributions from the repository root:
+   ```bash
+   python -m build
+   ```
+   This generates artifacts in `dist/`:
+   - `dist/devx_coding_agent-0.2.0.dev0-py3-none-any.whl`
+   - `dist/devx_coding_agent-0.2.0.dev0.tar.gz`
+3. Inspect package metadata and contents:
+   ```bash
+   python -m zipfile -l dist/devx_coding_agent-0.2.0.dev0-py3-none-any.whl
+   ```
+4. Install the wheel cleanly into any Python environment:
+   ```bash
+   python -m pip install --force-reinstall "dist/devx_coding_agent-0.2.0.dev0-py3-none-any.whl[all]"
+   ```
 
 ## Configure a provider
 

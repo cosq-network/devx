@@ -57,17 +57,52 @@ Traditional AI coding assistants either force you to copy-paste code snippets fr
 
 ### Step 1: Install `devx`
 
-In your Python 3.11+ environment:
+`devx` is packaged using standard **PEP 517 / PEP 621** conventions via [`pyproject.toml`](../pyproject.toml). Rather than maintaining a separate `requirements.txt`, all core dependencies, optional feature extras, and command-line entry points are declared directly in `pyproject.toml`.
+
+#### Install in Editable Mode (Recommended for Development)
+
+In your Python 3.11+ environment, install with your desired extras:
 
 ```bash
-# Recommended for full TUI + CLI + Agent features
-pip install -e ".[agent,tui,cli]"
+# Recommended for full TUI + CLI + Agent + SSH features
+pip install -e ".[agent,tui,cli,ssh,dev]"
+
+# Or install all optional dependencies:
+pip install -e ".[all]"
 ```
 
-For all extras (including local ONNX embeddings, LangSmith tracing, and dev tools):
+> **Why editable (`-e`)?**  
+> An editable install links the generated `devx` launcher directly to your working copy. Any updates to code in `src/devx` are instantly active without needing to reinstall.
 
+#### Making `devx` Accessible from Any Directory
+
+Installing `devx` puts the executable in your Python environment's `Scripts` (Windows) or `bin` (macOS/Linux) folder.
+
+- **Windows PowerShell**: Verify the command resolves globally:
+  ```powershell
+  where devx
+  ```
+  If `where devx` fails, append your Python Scripts directory to your User `PATH`:
+  ```powershell
+  $scripts = "$env:LOCALAPPDATA\Programs\Python\Python313\Scripts"
+  $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+  if (($userPath -split ";") -notcontains $scripts) {
+      [Environment]::SetEnvironmentVariable("Path", "$userPath;$scripts", "User")
+  }
+  ```
+- **macOS / Linux**: Ensure `~/.local/bin` or your venv's `bin/` directory is in `$PATH`:
+  ```bash
+  export PATH="$HOME/.local/bin:$PATH"
+  which devx
+  ```
+
+#### Building a Distributable Wheel (Optional)
+
+To package `devx` as a wheel:
 ```bash
-pip install -e ".[all]"
+python -m pip install build
+python -m build
+pip install "dist/devx_coding_agent-0.2.0.dev0-py3-none-any.whl[all]"
 ```
 
 ### Step 2: Initialize Your Project
