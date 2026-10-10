@@ -12,7 +12,8 @@ Under the hood, `devx` uses a **LangGraph supervisor workflow** (planner → cod
 ## Table of Contents
 
 1. [Features](#features)
-2. [Architecture](#architecture)
+2. [User Guide](docs/user-guide.md)
+3. [Architecture](#architecture)
 3. [Requirements](#requirements)
 4. [Installation](#installation)
 5. [Configuration](#configuration)
@@ -33,17 +34,24 @@ Under the hood, `devx` uses a **LangGraph supervisor workflow** (planner → cod
 | Feature | Description |
 |---|---|
 | **LangGraph supervisor** | Explicit planner → coder → tester state machine with conditional branching, loops, and interrupt/resume |
+| **Parallel execution** | Automatic parallel coder for multi-file tasks (batch reads) and concurrent lint/test execution |
+| **Remote SSH workspace** | Work transparently on remote servers via SSH/SFTP with jump-host bastion support, auto venv activation, and TCP keepalives |
 | **Approval-gated tools** | All file writes and shell commands require explicit user approval by default |
 | **Safe review and recovery** | Approved writes show bounded diffs, are atomic and journaled, and can be undone with `/undo` |
+| **Resilience & circuit breaker** | Circuit breaker protection, rate limit detection, and exponential backoff retry for LLM calls |
+| **Dead Letter Queue (DLQ)** | Failed runs are captured in SQLite for debugging, inspection, and one-command retries |
 | **SQLite sessions** | Persistent session state, event history, and checkpoint-compatible run IDs |
 | **@ file mentions** | Reference files/directories with `@` syntax; fuzzy completion in TUI |
-| **Plan-only workflow** | Preview a plan from the CLI or TUI without edits or project commands |
+| **Plan-first & plan-only** | Preview generated plans and approve before coding, or run `--plan-only` without edits |
 | **Bounded execution** | File reads, command output, context, iterations, and tool calls have configurable limits |
 | **Configurable permissions** | Ordered project rules can allow, ask, or deny reads, edits, shell commands, plugins, and MCP tools |
 | **Automatic compaction** | Long session histories are summarized locally while recent work remains available |
 | **Extensible tools** | Workspace plugins and stdio MCP servers register tools through the same approval and budget controls |
+| **Local workspace indexing** | Background or on-demand semantic indexing with `devx index` and file-watcher `--watch` |
+| **Observability suite** | Structured JSON logs, correlation IDs, health checks (`devx health`), and Prometheus metrics (`devx metrics`) |
+| **Project initialization** | Fast interactive or non-interactive onboarding wizard with `devx init` |
 | **Cancellation** | Cancel active TUI runs and terminate active project commands safely |
-| **Multi-provider support** | OpenAI, Anthropic, Google, Azure, LiteLLM, Ollama, or any OpenAI-compatible endpoint |
+| **Multi-provider support** | OpenAI, Anthropic, Google, Azure, OpenRouter, LiteLLM, Ollama, or any OpenAI-compatible endpoint |
 | **Local token optimization** | Optional ONNX INT8 embeddings for semantic cache and context compression (zero API calls) |
 | **LangSmith tracing** | Optional tracing integration for debugging agent runs |
 | **Cross-platform** | Windows, macOS, Linux support with CI/CD |
@@ -63,7 +71,7 @@ Under the hood, `devx` uses a **LangGraph supervisor workflow** (planner → cod
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │        LangGraph State Machine / Supervisor            │  │
 │  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐    │  │
-│  │  │ Planner │ │  Coder  │ │ Tester  │ │  Docs   │    │  │
+│  │  │ Planner │ │Coder/Par.│ │ Tester  │ │  Docs   │    │  │
 │  │  └─────────┘ └─────────┘ └─────────┘ └─────────┘    │  │
 │  └──────────────────────────────────────────────────────┘  │
 ├─────────────────────────────────────────────────────────────┤
@@ -86,11 +94,13 @@ Under the hood, `devx` uses a **LangGraph supervisor workflow** (planner → cod
 
 - **`src/devx/agents/graph.py`** — LangGraph state graph builder; orchestrates planner, coder, and tester stages with conditional branching
 - **`src/devx/harness/tools.py`** — `WorkspaceTools`: read, write, replace, search, `git_diff`, and `run` (shell commands)
+- **`src/devx/harness/backend.py`** & **`ssh_backend.py`** — Pluggable `LocalWorkspaceBackend` and `SshWorkspaceBackend` for local and remote SSH/SFTP environments
 - **`src/devx/harness/tool_registry.py`** — built-in, workspace plugin, and MCP tool registration
 - **`src/devx/harness/mcp.py`** — bounded stdio MCP initialization, discovery, and tool calls
 - **`src/devx/harness/approval.py`** — `ApprovalManager` gates all mutations (writes, command execution)
 - **`src/devx/harness/permissions.py`** — workspace containment and ordered allow/ask/deny rules
-- **`src/devx/harness/session.py`** — `SessionStore` (SQLite CRUD + event log)
+- **`src/devx/harness/session.py`** — `SessionStore` (SQLite CRUD, event log, and Dead Letter Queue)
+- **`src/devx/observability/`** — structured logging, correlation IDs, health probes, and metrics collector
 - **`src/devx/harness/changes.py`** — `ChangeJournal` (atomic writes, backups, rollback support)
 - **`src/devx/token_optim/context.py`** — bounded context assembly and deterministic relevance selection
 - **`src/devx/token_optim/compaction.py`** — bounded local session-history compaction
@@ -157,6 +167,8 @@ Both `DEVX_*` and legacy `DEV_*` variable names are supported, with `DEVX_*` tak
 | `DEVX_MODEL` | `gpt-4o` | Model name to use |
 | `DEVX_PROVIDER` | `openai` | Provider: `openai`, `anthropic`, `google`, `azure` |
 | `DEVX_WORKSPACE` | `cwd` (current working directory) | Workspace root directory |
+| `DEVX_REMOTE_SSH` | `""` | Remote workspace SSH target (`user@host:/path` or `ssh://...`) |
+| `DEVX_SSH_KEY` | `""` | Path to private SSH key for remote authentication |
 | `DEVX_SESSION_DB` | `~/.devx/sessions.db` | SQLite session database path |
 | `DEVX_CACHE_DB` | `~/.devx/cache.db` | Semantic cache database path |
 | `DEVX_APPROVAL_REQUIRED` | `true` | Require approval for file writes and commands |
@@ -235,10 +247,13 @@ policy and per-run tool-call budget.
    pip install -e ".[agent,tui,cli]"
    ```
 
-2. **Configure your provider:**
-   Set `DEVX_BASE_URL`, `DEVX_API_KEY`, and `DEVX_MODEL`, or create `~/.devx/config.env`.
+2. **Initialize your workspace:**
+   ```bash
+   devx init
+   ```
+   *Interactive wizard configures provider, curated tool-calling model, and test commands.*
 
-3. **Run the doctor check:**
+3. **Run diagnostic checks:**
    ```bash
    devx doctor
    ```
@@ -258,6 +273,29 @@ policy and per-run tool-call budget.
 
 The `devx` CLI exposes the following commands:
 
+### `devx init`
+
+Interactive or scripted project initialization wizard.
+
+```bash
+# Interactive wizard
+devx init
+
+# Scripted non-interactive onboarding
+devx init --provider openai --model gpt-4o --api-key "$API_KEY" --non-interactive
+```
+
+| Option | Description |
+|---|---|
+| `-p, --provider` | Provider: `openai`, `anthropic`, `google`, `azure`, `ollama`, `openrouter` |
+| `-m, --model` | Target model identifier |
+| `-k, --api-key` | Provider API key |
+| `-u, --base-url` | Custom base URL endpoint |
+| `-e, --embeddings` | Enable local ONNX embeddings for semantic search |
+| `-t, --test-cmd` | Test command (auto-detected if omitted) |
+| `-l, --lint-cmd` | Optional linter command |
+| `-y, --non-interactive` | Skip prompts and use defaults |
+
 ### `devx ask`
 
 Run a single agent task.
@@ -265,6 +303,7 @@ Run a single agent task.
 ```bash
 devx ask "explain @src/main.py"
 devx ask --session my-project "fix the bug in @src/utils.py"
+devx ask --remote "user@remote-host:/path/to/project" "run tests and fix failures"
 devx ask --approve-all "run tests and fix failures"   # trusted workspaces only
 devx ask --plan-only "design the authentication refactor"  # plan without edits
 ```
@@ -272,9 +311,13 @@ devx ask --plan-only "design the authentication refactor"  # plan without edits
 | Option | Description |
 |---|---|
 | `--session NAME` | Resume or create a named session |
-| `--json` | Emit the complete run state as JSON for automation |
-| `--approve-all` | Auto-approve all writes and commands (use only in trusted, isolated workspaces) |
+| `-r, --remote URI` | Remote workspace SSH target (e.g. `user@host:/path` or `ssh://...`) |
+| `--ssh-key PATH` | Path to private SSH key for remote authentication |
+| `--plan-first / --no-plan-first` | Prompt for user confirmation on generated plan before coding (enabled by default) |
 | `--plan-only` | Create the plan and stop before coding, testing, or mutations |
+| `--approve-all` | Auto-approve all writes and commands (use only in trusted, isolated workspaces) |
+| `--json` | Emit the complete run state as JSON for automation |
+| `--json-logs` | Output structured JSON logs with correlation IDs |
 
 ### `devx tui`
 
@@ -290,6 +333,34 @@ Run a diagnostic check to verify configuration, provider connectivity, and depen
 
 ```bash
 devx doctor
+```
+
+### `devx health`
+
+Run comprehensive component health probes.
+
+```bash
+devx health
+devx health --json
+```
+
+### `devx index`
+
+Build or update the local semantic search index for workspace files.
+
+```bash
+devx index             # Index workspace
+devx index --watch     # Watch filesystem and re-index on save
+devx index --force     # Force complete re-index
+```
+
+### `devx metrics`
+
+Export agent, tool, and runtime metrics in Prometheus or JSON format.
+
+```bash
+devx metrics --format prometheus
+devx metrics --format json
 ```
 
 ### `devx sessions`
@@ -318,6 +389,16 @@ Delete a session and its events.
 
 ```bash
 devx session delete abc123
+```
+
+### `devx session dlq`
+
+Inspect and manage failed tasks in the Dead Letter Queue (DLQ).
+
+```bash
+devx session dlq                   # List all DLQ entries
+devx session dlq-retry <ENTRY_ID>  # Retry a failed task
+devx session dlq-remove <ENTRY_ID> # Remove a DLQ entry
 ```
 
 ---
@@ -350,6 +431,8 @@ Launch the TUI with `devx tui`.
 | `/copy` | Copy the selected or full transcript |
 | `/setup`, `/provider`, `/model` | Configure provider and model settings |
 | `/session ...` | List, switch, rename, export, or import sessions |
+| `/remote connect <uri>` | Connect the workspace to a remote host via SSH/SFTP |
+| `/remote disconnect` | Disconnect remote SSH workspace and revert to local directory |
 | `/clear` | Clear the current conversation |
 | `/help` | Show help for available commands |
 
@@ -374,6 +457,7 @@ python scripts/benchmark.py
 | **Anthropic** | `DEVX_PROVIDER=anthropic`, `DEVX_BASE_URL=https://api.anthropic.com` |
 | **Google** | `DEVX_PROVIDER=google` |
 | **Azure OpenAI** | `DEVX_PROVIDER=azure`, `DEVX_BASE_URL=https://<resource>.openai.azure.com` |
+| **OpenRouter** | `DEVX_PROVIDER=openrouter`, `DEVX_BASE_URL=https://openrouter.ai/api/v1` (supports curated models & `openrouter/free`) |
 | **LiteLLM** | `DEVX_PROVIDER=openai`, `DEVX_BASE_URL=http://localhost:4000/v1` |
 | **Ollama** | `DEVX_PROVIDER=openai`, `DEVX_BASE_URL=http://localhost:11434/v1` |
 | **vLLM / any compatible** | `DEVX_PROVIDER=openai`, `DEVX_BASE_URL=<your-endpoint>` |

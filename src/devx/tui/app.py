@@ -225,9 +225,13 @@ class DevTUI(App):
     def __init__(self, session_id: str | None = None):
         super().__init__()
         self.session_id = session_id or "default"
+        self._remote_ssh = ""
+        self._remote_backend = None
         try:
             from devx.config import Settings
-            self._workspace = Settings.load().workspace
+            _loaded = Settings.load()
+            self._workspace = _loaded.workspace
+            self._remote_ssh = _loaded.remote_ssh or ""
         except (OSError, ValueError):
             self._workspace = Path.cwd()
         self._cancellation: CancellationToken | None = None
@@ -242,6 +246,15 @@ class DevTUI(App):
         self.sessions = SessionManager(self)
         self.actions = ActionHandlers(self)
         self.runner = AgentRunner(self)
+
+    def action_quit(self) -> None:
+        if getattr(self, "_remote_backend", None) is not None:
+            try:
+                self._remote_backend.close()
+            except Exception:
+                pass
+            self._remote_backend = None
+        self.exit()
 
     @property
     def _model_choices(self) -> list[str]:
@@ -381,7 +394,7 @@ class DevTUI(App):
         if not value:
             return
         if value == "/exit":
-            self.exit()
+            self.action_quit()
         elif value in {"/setup", "/configure"}:
             self.actions.open_setup()
         elif value == "/clear":
@@ -448,6 +461,13 @@ class DevTUI(App):
         elif value.startswith("/session import "):
             source = value.partition(" ")[2].partition(" ")[2].strip()
             self.sessions.import_session(source)
+        elif value.startswith("/remote connect ") or value.startswith("/remote use "):
+            uri = value.partition(" ")[2].partition(" ")[2].strip()
+            self.actions.connect_remote(uri)
+        elif value in {"/remote disconnect", "/remote reset"}:
+            self.actions.disconnect_remote()
+        elif value == "/remote":
+            self._write("Usage: /remote connect <ssh-uri> or /remote disconnect")
         elif value.startswith("/"):
             self._write(f"Unknown command: {value.split(maxsplit=1)[0]}. Type /help for commands.")
         else:

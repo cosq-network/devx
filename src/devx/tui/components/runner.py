@@ -30,6 +30,8 @@ class AgentRunner:
 
         try:
             settings = Settings.load()
+            if getattr(self.app, "_remote_ssh", ""):
+                object.__setattr__(settings, "remote_ssh", self.app._remote_ssh)
             store = SessionStore(settings.session_db)
             previous = store.load(self.app.session_id)
         except (OSError, ValueError) as exc:
@@ -38,7 +40,8 @@ class AgentRunner:
             return
 
         self.app._cancellation = CancellationToken()
-        cleaned, files, missing = parse_file_mentions(value, settings.workspace)
+        backend = getattr(self.app, "_remote_backend", None)
+        cleaned, files, missing = parse_file_mentions(value, settings.workspace, backend=backend)
         if missing:
             self.app._write("Unknown mentions: " + ", ".join(missing))
             self.app._run_active = False

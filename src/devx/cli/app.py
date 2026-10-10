@@ -51,6 +51,8 @@ if typer is not None:
         approve: bool = typer.Option(False, "--approve-all"),  # type: ignore[attr-defined]
         plan_only: bool = typer.Option(False, "--plan-only"),  # type: ignore[attr-defined]
         plan_first: bool = typer.Option(True, "--plan-first/--no-plan-first"),  # type: ignore[attr-defined]
+        remote: str | None = typer.Option(None, "--remote", "-r", help="Remote SSH workspace URI (ssh://user@host:port/path)"),  # type: ignore[attr-defined]
+        ssh_key: str | None = typer.Option(None, "--ssh-key", help="Path to SSH private key"),  # type: ignore[attr-defined]
     ):
         """Run a single coding-agent query."""
         from devx.agents.graph import DevState, build_supervisor_graph
@@ -58,10 +60,34 @@ if typer is not None:
         from devx.harness.approval import ApprovalManager, ApprovalRequest
         configure_logging(json_output=json_logs)
         settings = Settings.load()
+        if remote:
+            object.__setattr__(settings, "remote_ssh", remote)
+        if ssh_key:
+            object.__setattr__(settings, "ssh_key_path", ssh_key)
         settings.validate()
         configure_tracing(settings)
-        cleaned, files, missing = parse_file_mentions(prompt, settings.workspace)
+        backend = None
+        if getattr(settings, "remote_ssh", ""):
+            from devx.harness.ssh_backend import SshConfig, SshWorkspaceBackend
+            ssh_cfg = SshConfig.from_uri(settings.remote_ssh)
+            if getattr(settings, "ssh_key_path", ""):
+                ssh_cfg = SshConfig(
+                    host=ssh_cfg.host,
+                    username=ssh_cfg.username,
+                    port=ssh_cfg.port,
+                    password=ssh_cfg.password,
+                    key_filename=settings.ssh_key_path,
+                    remote_path=ssh_cfg.remote_path,
+                    proxy_command=ssh_cfg.proxy_command,
+                )
+            backend = SshWorkspaceBackend(ssh_cfg)
+        cleaned, files, missing = parse_file_mentions(prompt, settings.workspace, backend=backend)
         if missing:
+            if backend:
+                try:
+                    backend.close()
+                except Exception:
+                    pass
             raise typer.BadParameter("Unknown or out-of-workspace mentions: " + ", ".join(missing))  # type: ignore[attr-defined]
         store = SessionStore(settings.session_db)
         previous = store.load(session) if session else None
@@ -140,6 +166,12 @@ if typer is not None:
                 ).invoke(state)
         except (OSError, RuntimeError, ValueError) as exc:
             raise typer.BadParameter(str(exc)) from exc  # type: ignore[attr-defined]
+        finally:
+            if backend:
+                try:
+                    backend.close()
+                except Exception:
+                    pass
         if session:
             store.save(previous["id"] if previous else None, session, result, {"last_run_id": run_id})
         print(json.dumps(result) if json_output else result["result"])

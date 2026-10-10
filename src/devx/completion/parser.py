@@ -1,17 +1,46 @@
 from __future__ import annotations
 
+import posixpath
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from devx.harness.backend import WorkspaceBackend
 
 MENTION_PATTERN = re.compile(r"(?<!\w)@([A-Za-z0-9._~\\/ -]+?)(?=\s|$|[,;:!?])")
 
 
-def parse_file_mentions(text: str, workspace: Path | None = None) -> tuple[str, list[Path], list[str]]:
+def parse_file_mentions(
+    text: str,
+    workspace: Path | None = None,
+    backend: WorkspaceBackend | None = None,
+) -> tuple[str, list[Path], list[str]]:
     root = (workspace or Path.cwd()).resolve()
     files: list[Path] = []
     missing: list[str] = []
     for match in MENTION_PATTERN.finditer(text):
         raw = match.group(1).rstrip()
+        if backend is not None and getattr(backend, "is_remote", False):
+            clean = raw.strip().replace("\\", "/")
+            if clean.startswith("/"):
+                remote_root = posixpath.normpath(backend.root)
+                clean_norm = posixpath.normpath(clean)
+                if clean_norm.startswith(remote_root):
+                    rel = posixpath.relpath(clean_norm, remote_root)
+                else:
+                    rel = clean_norm.lstrip("/")
+            else:
+                rel = posixpath.normpath(clean)
+
+            if backend.exists(rel):
+                p = Path(rel)
+                if p not in files:
+                    files.append(p)
+            else:
+                missing.append(raw)
+            continue
+
         path = Path(raw).expanduser()
         resolved = (path if path.is_absolute() else root / path).resolve(strict=False)
         try:

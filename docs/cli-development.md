@@ -344,6 +344,21 @@ overall configuration status. Inspect the complete command surface with:
 devx --help
 ```
 
+## Initialize a project
+
+Run the interactive onboarding wizard to configure providers, curated tool-calling
+models, test frameworks, and local settings:
+
+```bash
+devx init
+```
+
+Or run in automated non-interactive mode:
+
+```bash
+devx init --provider openai --model gpt-4o --api-key "$API_KEY" --non-interactive
+```
+
 ## Run CLI tasks
 
 Run a one-shot task:
@@ -365,6 +380,30 @@ devx sessions
 devx session events local-devx
 ```
 
+Inspect and retry failed runs with the Dead Letter Queue (DLQ):
+
+```text
+devx session dlq
+devx session dlq-retry <ENTRY_ID>
+devx session dlq-remove <ENTRY_ID>
+```
+
+Run component health checks and export metrics:
+
+```text
+devx health
+devx health --json
+devx metrics --format prometheus
+devx metrics --format json
+```
+
+Build and maintain the local semantic search index:
+
+```text
+devx index
+devx index --watch
+```
+
 Use JSON output for scripts or automation:
 
 ```text
@@ -376,6 +415,14 @@ mutations:
 
 ```text
 devx ask --plan-only "design the authentication refactor"
+```
+
+By default, `devx ask` operates in **plan-first** mode, displaying the generated plan
+and prompting for user confirmation before coding. Use `--no-plan-first` to skip the
+initial plan confirmation:
+
+```text
+devx ask --no-plan-first "fix typo in @README.md"
 ```
 
 For trusted, isolated workspaces, `--approve-all` automatically approves file

@@ -54,6 +54,7 @@ secrets/
 # IDE and editor files
 .idea/
 .vscode/
+.kilo/
 *.code-workspace
 *.swp
 *.swo

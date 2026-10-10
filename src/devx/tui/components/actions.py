@@ -25,6 +25,9 @@ class ActionHandlers:
         from devx.harness.tools import WorkspaceTools
 
         settings = Settings.load()
+        if getattr(self.app, "_remote_ssh", ""):
+            object.__setattr__(settings, "remote_ssh", self.app._remote_ssh)
+        backend = getattr(self.app, "_remote_backend", None)
         result = WorkspaceTools(
             PermissionPolicy(
                 settings.workspace,
@@ -33,6 +36,7 @@ class ActionHandlers:
             ),
             max_bytes=settings.max_file_bytes,
             timeout=settings.command_timeout,
+            backend=backend,
         ).git_diff()
         self.app._write(result.output or "No uncommitted changes.")
 
@@ -52,7 +56,8 @@ class ActionHandlers:
             self.app._write("No completed run is available to undo.")
             return
         try:
-            restored = ChangeJournal(settings.session_db).rollback(run_id)
+            backend = getattr(self.app, "_remote_backend", None)
+            restored = ChangeJournal(settings.session_db).rollback(run_id, backend=backend)
         except (OSError, sqlite3.Error) as exc:
             self.app._write(f"Unable to undo changes: {exc}")
             return
@@ -138,3 +143,51 @@ class ActionHandlers:
             self.app._write(f"> {task} (plan only)")
             self.app._run_active = True
             self.app.run_worker(self.app._ask(task, plan_only=True), exclusive=False)
+
+    def connect_remote(self, uri: str) -> None:
+        from devx.config import Settings
+        uri = uri.strip()
+        if not uri:
+            self.app._write("Usage: /remote connect <ssh-uri> (e.g. ssh://user@host:port/path or user@host:/path)")
+            return
+        try:
+            from devx.harness.ssh_backend import SshConfig, SshWorkspaceBackend
+            cfg = SshConfig.from_uri(uri)
+            settings = Settings.load()
+            if getattr(settings, "ssh_key_path", ""):
+                cfg = SshConfig(
+                    host=cfg.host,
+                    username=cfg.username,
+                    port=cfg.port,
+                    password=cfg.password,
+                    key_filename=settings.ssh_key_path,
+                    remote_path=cfg.remote_path,
+                    proxy_command=cfg.proxy_command,
+                )
+            if getattr(self.app, "_remote_backend", None) is not None:
+                try:
+                    self.app._remote_backend.close()
+                except Exception:
+                    pass
+            backend = SshWorkspaceBackend(cfg)
+            self.app._remote_backend = backend
+            self.app._remote_ssh = uri
+            object.__setattr__(settings, "remote_ssh", uri)
+            self.app.query_one("#status-text", Static).update(f"● remote: {cfg.host}:{cfg.remote_path}")
+            self.app._write(f"Connected remote SSH workspace: {cfg.username}@{cfg.host}:{cfg.remote_path}")
+        except Exception as exc:
+            self.app._write(f"Remote connection error: {exc}")
+
+    def disconnect_remote(self) -> None:
+        from devx.config import Settings
+        if getattr(self.app, "_remote_backend", None) is not None:
+            try:
+                self.app._remote_backend.close()
+            except Exception:
+                pass
+            self.app._remote_backend = None
+        self.app._remote_ssh = ""
+        settings = Settings.load()
+        object.__setattr__(settings, "remote_ssh", "")
+        self.app.query_one("#status-text", Static).update("● ready")
+        self.app._write("Disconnected remote workspace. Reverted to local workspace.")

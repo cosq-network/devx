@@ -124,6 +124,9 @@ def _is_rate_limit_error(exc: Exception) -> bool:
 
 def _is_retryable_error(exc: Exception) -> bool:
     """Check if an exception is retryable."""
+    error_str = str(exc).lower()
+    if any(k in error_str for k in ["502", "bad gateway", "upstream"]):
+        return True
     return _is_rate_limit_error(exc) or isinstance(exc, (TimeoutError, ConnectionError, OSError, RuntimeError))
 
 
@@ -247,6 +250,10 @@ class OpenRouterProvider(ModelProvider):
             "base_url": settings.base_url,
             "temperature": 0.1,
             "max_retries": 2,
+            "default_headers": {
+                "HTTP-Referer": "https://github.com/devx-coding-agent",
+                "X-Title": "devx",
+            },
         }
         if settings.api_key and settings.api_key != "sk-placeholder":
             kwargs["api_key"] = SecretStr(settings.api_key)

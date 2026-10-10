@@ -24,7 +24,9 @@ The current development line also includes:
 
 Current local validation:
 
-- 70 automated tests pass; the suite includes session import/export,
+- 73 automated tests pass; the suite includes observability (logging, metrics, health checks),
+  resilience (circuit breaker, rate limit retries, dead letter queue), parallel coder batch execution,
+  concurrent lint/test runs, onboarding (`devx init`), semantic indexing (`devx index`), the suite includes session import/export,
   versioning, framework detection, previews, plan-only execution, context
   selection, cache isolation, permissions, plugins, MCP, and benchmark coverage.
 - Ruff and Python compilation passing.
@@ -96,8 +98,11 @@ Current local validation:
 
 ### Observability
 
+- ~~Add structured JSON logging with correlation IDs.~~
+- ~~Add Prometheus and JSON metrics collection (`devx metrics`).~~
+- ~~Add component health check probes (`devx health`).~~
 - Add opt-in LangSmith tracing for agent graphs and tool calls.
-- Add OpenTelemetry-compatible local spans and metrics.
+- Add OpenTelemetry-compatible local spans.
 - Redact secrets, credentials, prompts, and sensitive file content by default.
 - Add structured run export for support and debugging.
 

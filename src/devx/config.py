@@ -64,6 +64,11 @@ class Settings:
     max_context_messages: int = 24
     max_context_chars: int = 24_000
     compaction_summary_chars: int = 4_000
+    diagnostic_distillation_enabled: bool = True
+    diagnostic_distillation_max_chars: int = 4_000
+    decoupled_context_enabled: bool = True
+    remote_ssh: str = ""
+    ssh_key_path: str = ""
 
     @classmethod
     def load(cls, *, workspace: Path | None = None) -> Settings:
@@ -176,6 +181,17 @@ embeddings_offline=boolean("DEVX_EMBEDDINGS_OFFLINE", True, "DEV_EMBEDDINGS_OFFL
                 "DEVX_COMPACTION_SUMMARY_CHARS", str(compaction.get("summary_chars", 4_000)),
                 "DEV_COMPACTION_SUMMARY_CHARS"
             )),
+            diagnostic_distillation_enabled=boolean(
+                "DEVX_DIAGNOSTIC_DISTILLATION_ENABLED", True, "DEV_DIAGNOSTIC_DISTILLATION_ENABLED"
+            ),
+            diagnostic_distillation_max_chars=int(get(
+                "DEVX_DIAGNOSTIC_DISTILLATION_MAX_CHARS", "4000", "DEV_DIAGNOSTIC_DISTILLATION_MAX_CHARS"
+            )),
+            decoupled_context_enabled=boolean(
+                "DEVX_DECOUPLED_CONTEXT_ENABLED", True, "DEV_DECOUPLED_CONTEXT_ENABLED"
+            ),
+            remote_ssh=get("DEVX_REMOTE_SSH", "", "DEV_REMOTE_SSH"),
+            ssh_key_path=get("DEVX_SSH_KEY", "", "DEV_SSH_KEY"),
         )
 
     def validate(self) -> None:
@@ -183,5 +199,7 @@ embeddings_offline=boolean("DEVX_EMBEDDINGS_OFFLINE", True, "DEV_EMBEDDINGS_OFFL
             raise ValueError("Iteration, tool-call, and context-file limits must be positive")
         if self.max_context_messages < 2 or self.max_context_chars < 256 or self.compaction_summary_chars < 128:
             raise ValueError("Context compaction limits are too small")
+        if self.diagnostic_distillation_max_chars < 100:
+            raise ValueError("Diagnostic distillation character limit is too small")
         if self.command_timeout <= 0 or self.max_file_bytes <= 0:
             raise ValueError("Timeout and file-size limits must be positive")

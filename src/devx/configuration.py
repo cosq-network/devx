@@ -51,6 +51,7 @@ MODEL_CATALOG: dict[str, tuple[ModelInfo, ...]] = {
         ModelInfo("anthropic/claude-3.7-sonnet", tool_calling=True, coding=True),
         ModelInfo("deepseek/deepseek-chat", tool_calling=True, coding=True),
         ModelInfo("openai/gpt-4o", tool_calling=True, coding=True),
+        ModelInfo("openrouter/free", context_length=200_000, free=True, tool_calling=True, coding=True),
         ModelInfo("poolside/laguna-s-2.1:free", free=True, tool_calling=True, coding=True),
         ModelInfo("qwen/qwen-2.5-coder-32b-instruct", tool_calling=True, coding=True),
     ),
@@ -150,9 +151,15 @@ def list_models(base_url: str, api_key: str = "") -> list[ModelInfo]:
             continue
         identifier = str(item["id"])
         pricing = item.get("pricing", {}) or {}
-        free = identifier.endswith(":free") or (pricing.get("prompt") == "0" and pricing.get("completion") == "0")
+        free = (
+            identifier.endswith(":free")
+            or identifier.endswith("/free")
+            or identifier == "openrouter/free"
+            or (pricing.get("prompt") == "0" and pricing.get("completion") == "0")
+        )
         parameters = item.get("supported_parameters", []) or []
-        models.append(ModelInfo(identifier, item.get("context_length"), free, "tools" in parameters))
+        tool_calling = "tools" in parameters or identifier == "openrouter/free"
+        models.append(ModelInfo(identifier, item.get("context_length"), free, tool_calling))
     return sorted(models, key=lambda model: model.identifier.lower())
 
 

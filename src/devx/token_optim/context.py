@@ -66,6 +66,73 @@ def select_relevant_files(query: str, candidate_files: list[Path], max_files: in
     return [item[2] for item in sorted(scored, reverse=True)[:max_files]]
 
 
+def generate_file_manifest(files: list[Path], max_chars: int = 8000) -> str:
+    """Generate a lightweight structural outline of target files for the planner.
+
+    Extracts file paths, sizes, and top-level definitions or preview lines
+    without embedding multi-megabyte source bodies into the planner context.
+    """
+    manifest_lines: list[str] = ["Target Workspace Files:"]
+    total_chars = len(manifest_lines[0])
+
+    for path in files:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        file_header = f"\n- {path} ({size} bytes)"
+        if total_chars + len(file_header) > max_chars:
+            manifest_lines.append("\n... [remaining files truncated]")
+            break
+        manifest_lines.append(file_header)
+        total_chars += len(file_header)
+
+        # Attempt to extract top-level structure (function/class headers or first comments)
+        try:
+            with path.open("r", encoding="utf-8", errors="ignore") as f:
+                previews = []
+                for line in f:
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    if (
+                        stripped.startswith("def ")
+                        or stripped.startswith("class ")
+                        or stripped.startswith("export ")
+                        or stripped.startswith("function ")
+                        or stripped.startswith("async def ")
+                    ):
+                        previews.append(f"    {stripped}")
+                        if len(previews) >= 8:
+                            previews.append("    ...")
+                            break
+                if previews:
+                    preview_text = "\n" + "\n".join(previews)
+                    if total_chars + len(preview_text) <= max_chars:
+                        manifest_lines.append(preview_text)
+                        total_chars += len(preview_text)
+        except OSError:
+            pass
+
+    return "".join(manifest_lines)
+
+
+def decoupled_coder_context(files: list[Path]) -> str:
+    """Generate a decoupled context reference for the coder agent.
+
+    Provides the target file paths and explicitly instructs the coder
+    to inspect exact ranges on-demand using read_file or read_files.
+    """
+    if not files:
+        return "No specific files pre-selected. Use search_files or read_file to inspect the workspace."
+    paths_str = "\n".join(f"- {p}" for p in files)
+    return (
+        "Target Files in Scope:\n"
+        f"{paths_str}\n\n"
+        "Note: Read specific lines or files on-demand using `read_file` or `read_files` before editing."
+    )
+
+
 def read_context(files: list[Path], max_file_bytes: int = 1_000_000, max_total_bytes: int = 5_000_000) -> str:
     chunks: list[str] = []
     total = 0

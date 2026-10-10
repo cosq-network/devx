@@ -25,9 +25,9 @@ journaled recovery.
 │                 Agentic Harness (Multi-Agent)                │
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │        LangGraph State Machine / Supervisor            │  │
-│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐                │  │
-│  │  │ Planner │ │  Coder  │ │ Tester  │                │  │
-│  │  └─────────┘ └─────────┘ └─────────┘                │  │
+│  │  ┌─────────┐ ┌──────────────┐ ┌────────────────┐    │  │
+│  │  │ Planner │ │Coder/Parallel│ │ Tester/Parallel│    │  │
+│  │  └─────────┘ └──────────────┘ └────────────────┘    │  │
 │  └──────────────────────────────────────────────────────┘  │
 ├─────────────────────────────────────────────────────────────┤
 │              Token Optimization Layer (Client-Side)          │
@@ -36,12 +36,17 @@ journaled recovery.
 │  │ (ONNX INT8)        │  │ Selection (@ file mentions) │  │
 │  └────────────────────┘  └─────────────────────────────┘  │
 ├─────────────────────────────────────────────────────────────┤
-│                    Model Abstraction Layer                   │
+│           Model Abstraction & Resilience Layer               │
 │  ┌──────────────────────────────────────────────────────┐  │
-│  │  LangChain ChatOpenAI (configurable base_url)         │  │
-│  │  → Any OpenAI-compatible endpoint                     │  │
-│  │    (LiteLLM / vLLM / Ollama / OpenAI / etc.)          │  │
+│  │  ChatOpenAI Adapter + Circuit Breaker + Retry Policy │  │
+│  │  → OpenAI / Anthropic / Google / Azure / OpenRouter  │  │
 │  └──────────────────────────────────────────────────────┘  │
+├─────────────────────────────────────────────────────────────┤
+│            Observability & Recovery Subsystem               │
+│  ┌─────────────────┐ ┌──────────────────┐ ┌─────────────┐  │
+│  │ Structured Logs │ │ Prometheus/JSON  │ │ SQLite DLQ  │  │
+│  │ & Tracing       │ │ Metrics & Health │ │ & Rollbacks │  │
+│  └─────────────────┘ └──────────────────┘ └─────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -60,6 +65,8 @@ journaled recovery.
 | Local embeddings | `sentence-transformers` or `onnxruntime` | Client-side token optimization, zero API calls |
 | Cache storage | SQLite (`SemanticCache`) | Namespaced semantic cache and file fingerprints |
 | Model client | `langchain-openai` | Any OpenAI-compatible API |
+| Observability | `devx.observability` | Structured JSON logging, health checks, Prometheus/JSON metrics |
+| Resilience | `CircuitBreaker` + DLQ | Circuit breaker pattern, rate limit retry, Dead Letter Queue |
 
 ### Why These Libraries
 
@@ -93,6 +100,9 @@ devx/
 │   ├── harness/                # Agentic harness
 │   │   ├── __init__.py
 │   │   ├── approval.py         # Approval requests and decisions
+│   │   ├── backend.py          # WorkspaceBackend abstract protocol
+│   │   ├── local_backend.py    # Local filesystem & process backend
+│   │   ├── ssh_backend.py      # Remote SSH/SFTP backend with bastion & keepalive
 │   │   ├── changes.py          # Journal, backups, and rollback
 │   │   ├── runtime.py          # Cancellation token and cancellation error
 │   │   ├── session.py          # Session persistence
@@ -104,7 +114,13 @@ devx/
 │   │
 │   ├── tui/                    # Textual interface
 │   │   ├── app.py              # Main TUI app
-│   │   └── app.py              # App, modals, slash commands, workers
+│   │   └── components/         # Modular actions, commands, modals, runner, session
+│   │
+│   ├── observability/          # Observability subsystem
+│   │   ├── logging.py          # Structured JSON logging & correlation IDs
+│   │   ├── metrics.py          # Prometheus and JSON metrics collection
+│   │   ├── health.py           # Component health checks
+│   │   └── tracing.py          # LangSmith tracing setup
 │   │
 │   ├── cli/                    # Typer commands
 │   │   └── app.py              # Typer app and subcommands
@@ -611,6 +627,8 @@ The TUI supports the following core commands:
 | `/undo` | Restore the last run's safe journaled changes | Calls `ChangeJournal.rollback` |
 | `/plan <task>` | Produce a plan without coding or mutations | Runs planner only |
 | `/cancel` | Request cancellation of an active run | Cancels `CancellationToken` |
+| `/remote connect <uri>` | Connect the workspace to a remote host via SSH/SFTP | Updates active backend to `SshWorkspaceBackend` |
+| `/remote disconnect` | Disconnect remote SSH workspace and revert to local directory | Restores `LocalWorkspaceBackend` |
 | `/copy` | Copy selected or full transcript | Native clipboard helper |
 | `/exit` | Quit the TUI | Triggers Textual `action_quit` |
 
@@ -644,6 +662,18 @@ def _handle_slash_command(self, cmd: str):
             f"Unknown command: {command}. Type /help for available commands."
         )
 ```
+
+### 4.9 Pluggable Workspace Backends (Local & Remote SSH)
+
+The agent harness decouples file operations and process execution behind the `WorkspaceBackend` abstract protocol:
+
+- **`LocalWorkspaceBackend`**: Direct local filesystem access and `subprocess.run` command execution for standard workspaces.
+- **`SshWorkspaceBackend`**: Remote development over Paramiko SSH/SFTP:
+  - Transparent parsing of SSH URIs (`ssh://user:pass@host:port/path` or `user@host:/path`).
+  - OpenSSH config resolution (`~/.ssh/config`) with bastion jump-host `ProxyCommand` tunneling.
+  - Fast single-roundtrip remote file discovery using `git ls-files -co --exclude-standard`.
+  - Remote virtual environment auto-detection and activation (`.venv/bin/activate`).
+  - Terminal ANSI escape code stripping and TCP transport keepalives.
 
 ---
 

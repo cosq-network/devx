@@ -21,7 +21,13 @@ from devx.harness.testing import detect_test_command
 from devx.harness.tools import WorkspaceTools
 from devx.llm import create_llm, invoke_with_retry, _is_rate_limit_error
 from devx.token_optim.compaction import append_message as compact_append_message
-from devx.token_optim.context import read_context, select_relevant_files
+from devx.token_optim.context import (
+    decoupled_coder_context,
+    generate_file_manifest,
+    read_context,
+    select_relevant_files,
+)
+from devx.token_optim.distillation import distill_test_output
 
 
 class GraphState(TypedDict, total=False):
@@ -45,9 +51,10 @@ class GraphState(TypedDict, total=False):
 
 class ConfiguredGraph:
     """Small adapter that supplies a stable LangGraph checkpoint thread ID."""
-    def __init__(self, graph: Any, thread_id: str, graph_builder: Any = None, session_db: Any = None):
+    def __init__(self, graph: Any, thread_id: str, graph_builder: Any = None, session_db: Any = None, backend: Any = None):
         self.graph, self.thread_id = graph, thread_id
         self.graph_builder, self.session_db = graph_builder, session_db
+        self.backend = backend
 
     def _config(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
         merged = dict(config or {})
@@ -76,6 +83,12 @@ class ConfiguredGraph:
             events = result.setdefault("events", [])
             events.append({"type": "agent_error", "error": error_msg})
             return result
+        finally:
+            if self.backend and getattr(self.backend, "is_remote", False):
+                try:
+                    self.backend.close()
+                except Exception:
+                    pass
 
     async def ainvoke(self, state: GraphState, config: dict[str, Any] | None = None) -> dict[str, Any]:
         if self.graph_builder is None or self.session_db is None:
@@ -98,6 +111,12 @@ class ConfiguredGraph:
                 events = result.setdefault("events", [])
                 events.append({"type": "agent_error", "error": error_msg})
                 return result
+            finally:
+                if self.backend and getattr(self.backend, "is_remote", False):
+                    try:
+                        self.backend.close()
+                    except Exception:
+                        pass
         try:
             import aiosqlite
             from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -128,6 +147,12 @@ class ConfiguredGraph:
                 events = result.setdefault("events", [])
                 events.append({"type": "agent_error", "error": error_msg})
                 return result
+            finally:
+                if self.backend and getattr(self.backend, "is_remote", False):
+                    try:
+                        self.backend.close()
+                    except Exception:
+                        pass
 
 
 def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files: list[str] | None = None,
@@ -143,13 +168,31 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
     cancellation = cancellation or CancellationToken()
     session_store = SessionStore(settings.session_db)
     journal = ChangeJournal(settings.session_db)
+    
+    backend = None
+    remote_ssh = getattr(settings, "remote_ssh", "")
+    if remote_ssh:
+        from devx.harness.ssh_backend import SshConfig, SshWorkspaceBackend
+        ssh_cfg = SshConfig.from_uri(remote_ssh)
+        if getattr(settings, "ssh_key_path", ""):
+            ssh_cfg = SshConfig(
+                host=ssh_cfg.host,
+                username=ssh_cfg.username,
+                port=ssh_cfg.port,
+                password=ssh_cfg.password,
+                key_filename=settings.ssh_key_path,
+                remote_path=ssh_cfg.remote_path,
+            )
+        backend = SshWorkspaceBackend(ssh_cfg)
+
     tools = WorkspaceTools(PermissionPolicy(
                                settings.workspace,
                                settings.approval_required,
                                getattr(settings, "permission_rules", ()),
                            ),
                            max_bytes=settings.max_file_bytes, timeout=settings.command_timeout,
-                           journal=journal, run_id=run_id, cancellation=cancellation)
+                           journal=journal, run_id=run_id, cancellation=cancellation,
+                           backend=backend)
 
     def approve(action: str, target: str, reason: str = "") -> bool:
         return approvals.allows(run_id, action, target, reason)
@@ -196,15 +239,33 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
         max_context_files = max(1, int(getattr(settings, "max_context_files", 15)))
         # Auto-discover project files when no explicit files provided
         if not selected and getattr(settings, "auto_context", True):
-            from devx.token_optim.context import discover_project_files
-            discovered = discover_project_files(settings.workspace, max_files=200)
+            if backend is not None and getattr(backend, "is_remote", False):
+                from devx.token_optim.context import CODE_EXTS
+                remote_files = backend.walk_files(max_files=200, code_exts=CODE_EXTS)
+                discovered = [Path(p) for p in remote_files]
+            else:
+                from devx.token_optim.context import discover_project_files
+                discovered = discover_project_files(settings.workspace, max_files=200)
             if discovered:
                 selected = select_relevant_files(task, discovered, max_context_files, embedder)
                 if event_sink:
                     event_sink({"type": "context_auto_discovered", "files": [str(p) for p in selected]})
         elif len(selected) > max_context_files:
             selected = select_relevant_files(task, selected, max_context_files, embedder)
-        context = read_context(selected, settings.max_file_bytes)
+
+        if backend is not None and getattr(backend, "is_remote", False):
+            context_blocks = []
+            for path_item in selected:
+                try:
+                    rel_p = str(path_item).strip().replace("\\", "/").lstrip("/")
+                    data = backend.read_bytes(rel_p, settings.max_file_bytes)
+                    text = data.decode("utf-8", errors="replace")
+                    context_blocks.append(f"--- {rel_p} ---\n{text}")
+                except Exception:
+                    pass
+            context = "\n\n".join(context_blocks)
+        else:
+            context = read_context(selected, settings.max_file_bytes)
         fingerprint = ""
         if semantic_cache:
             from devx.token_optim.cache import fingerprint_files
@@ -248,10 +309,15 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
             state["plan"] = cached_plan
             emit(state, {"type": "cache_hit", "kind": "plan"})
         else:
+            planner_context = (
+                generate_file_manifest(selected_paths)
+                if getattr(settings, "decoupled_context_enabled", True) and selected_paths
+                else context
+            )
             try:
                 response = invoke_with_retry(create_llm(settings), "Create a concrete coding plan. Do not edit files. "
                                           f"Give special attention to the requested specialist perspective: {specialist}.\n\nTask:\n"
-                                          + task + "\n\nContext:\n" + context,
+                                          + task + "\n\nContext:\n" + planner_context,
                                           provider=settings.provider,
                                           )
             except Exception as exc:
@@ -294,7 +360,11 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
         if not task:
             raise ValueError("A task is required to run the supervisor graph")
         agent = build_coding_agent(settings, tools, approve, consume_tool_call, registry)
-        context = context_for(task)[0]
+        context_str, _, selected_paths = context_for(task)
+        if getattr(settings, "decoupled_context_enabled", True) and selected_paths:
+            coder_context = decoupled_coder_context(selected_paths)
+        else:
+            coder_context = context_str
         if state.get("repair_attempts", 0):
             prompt = (
                 "The latest lint/test run failed. Inspect the failure, make the smallest approved fix, "
@@ -305,7 +375,7 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
             prompt = (
                 "Execute this approved coding task. Inspect before editing, make minimal changes, "
                 "and report exactly what happened.\n\nTask:\n" + task +
-                "\n\nPlan:\n" + state.get("plan", "") + "\n\nContext:\n" + context
+                "\n\nPlan:\n" + state.get("plan", "") + "\n\nContext:\n" + coder_context
             )
         requested_agent = state.get("requested_agent")
         if requested_agent:
@@ -340,12 +410,16 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
         
         # Use the parallel coder agent with read_files tool
         agent = build_coding_agent(settings, tools, approve, consume_tool_call, registry)
-        context = context_for(task)[0]
+        context_str, _, selected_paths = context_for(task)
+        if getattr(settings, "decoupled_context_enabled", True) and selected_paths:
+            coder_context = decoupled_coder_context(selected_paths)
+        else:
+            coder_context = context_str
         
         prompt = (
             "Execute this coding task efficiently. Use read_files to batch-read multiple files at once. "
             "Make minimal changes and report exactly what happened.\n\nTask:\n" + task +
-            "\n\nPlan:\n" + state.get("plan", "") + "\n\nContext:\n" + context
+            "\n\nPlan:\n" + state.get("plan", "") + "\n\nContext:\n" + coder_context
         )
         requested_agent = state.get("requested_agent")
         if requested_agent:
@@ -380,7 +454,7 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
     def tester(state: GraphState) -> GraphState:
         cancellation.raise_if_cancelled()
         emit(state, {"type": "agent_started", "agent": "tester"})
-        command = state.get("test_command") or settings.test_command or detect_test_command(settings.workspace)
+        command = state.get("test_command") or settings.test_command or detect_test_command(settings.workspace, backend=backend)
         state["test_command"] = command or ""
         state["test_attempts"] = state.get("test_attempts", 0) + 1
         state["iteration"] = state.get("iteration", 0) + 1
@@ -423,14 +497,18 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
             state["lint_result"] = lint_output
             emit(state, {"type": "lint_finished", "ok": lint_status == "ok", "exit_code": 0 if lint_status == "ok" else 1})
             
+            max_diag_chars = int(getattr(settings, "diagnostic_distillation_max_chars", 4000))
+            distill_enabled = getattr(settings, "diagnostic_distillation_enabled", True)
+
             if lint_status == "denied" or lint_status == "failed":
-                state["test_result"] = "Lint failed:\n" + lint_output
+                lint_failure = distill_test_output(lint_output, max_diag_chars) if distill_enabled else lint_output
+                state["test_result"] = "Lint failed:\n" + lint_failure
                 state["status"] = "tests_failed"
             elif test_status == "denied":
                 state["test_result"] = test_output
                 state["status"] = "completed"
             elif test_status == "failed":
-                state["test_result"] = test_output
+                state["test_result"] = distill_test_output(test_output, max_diag_chars) if distill_enabled else test_output
                 state["status"] = "tests_failed"
                 state["repair_attempts"] = state.get("repair_attempts", 0)
             else:
@@ -446,7 +524,13 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
                 state["lint_result"] = lint_result.output or f"exit code: {lint_result.exit_code}"
                 emit(state, {"type": "lint_finished", "ok": lint_result.ok, "exit_code": lint_result.exit_code})
                 if not lint_result.ok:
-                    state["test_result"] = "Lint failed:\n" + state["lint_result"]
+                    max_diag_chars = int(getattr(settings, "diagnostic_distillation_max_chars", 4000))
+                    lint_failure = (
+                        distill_test_output(state["lint_result"], max_diag_chars)
+                        if getattr(settings, "diagnostic_distillation_enabled", True)
+                        else state["lint_result"]
+                    )
+                    state["test_result"] = "Lint failed:\n" + lint_failure
                     state["status"] = "tests_failed"
                 else:
                     state["status"] = "completed"
@@ -457,7 +541,12 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
                 state["status"] = "completed"
             else:
                 result = tools.run(command, approved=True)
-                state["test_result"] = result.output or f"exit code: {result.exit_code}"
+                raw_test_output = result.output or f"exit code: {result.exit_code}"
+                if not result.ok and getattr(settings, "diagnostic_distillation_enabled", True):
+                    max_diag_chars = int(getattr(settings, "diagnostic_distillation_max_chars", 4000))
+                    state["test_result"] = distill_test_output(raw_test_output, max_diag_chars)
+                else:
+                    state["test_result"] = raw_test_output
                 state["status"] = "completed" if result.ok else "tests_failed"
                 emit(state, {"type": "test_finished", "ok": result.ok, "exit_code": result.exit_code})
                 if not result.ok:
@@ -503,6 +592,7 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
             session_id or run_id,
             graph,
             settings.session_db,
+            backend=backend,
         )
     except (ImportError, TypeError):
-        return ConfiguredGraph(graph.compile(), session_id or run_id)
+        return ConfiguredGraph(graph.compile(), session_id or run_id, backend=backend)

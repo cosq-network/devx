@@ -25,7 +25,10 @@ The project currently has:
   registry, workspace plugins, and stdio MCP tool support.
 - Unit, TUI, mocked integration, and configuration tests.
 
-The latest local validation includes 70 passing tests, provider-contract
+The latest local validation includes 73 passing tests, with newly implemented
+observability (structured JSON logs, correlation IDs, Prometheus/JSON metrics, health probes),
+resilience (CircuitBreaker pattern, exponential backoff, Dead Letter Queue), parallel execution
+(parallel coder with batch reads, concurrent lint/test), and project initialization (`devx init`), provider-contract
 coverage, linting, compilation, diff validation, and passing offline
 benchmarks. This is not yet equivalent to live-provider, cross-platform,
 security, or release acceptance.

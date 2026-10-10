@@ -20,8 +20,9 @@ azure = ["langchain-openai>=1.0"]
 google = ["langchain-google-genai>=2.0"]
 embeddings = ["numpy>=1.26", "onnxruntime>=1.18", "transformers>=4.40", "sentence-transformers>=3.0"]
 tracing = ["langsmith>=0.2"]
+ssh = ["paramiko>=3.0"]
 dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "pyright>=1.1"]
-all = ["langchain>=1.0", "langgraph>=1.0", "langgraph-checkpoint-sqlite>=2.0", "aiosqlite>=0.20", "langchain-openai>=1.0", "langchain-anthropic>=1.0", "langchain-google-genai>=2.0", "textual>=0.70", "typer>=0.12", "numpy>=1.26", "onnxruntime>=1.18", "transformers>=4.40", "sentence-transformers>=3.0", "langsmith>=0.2"]
+all = ["langchain>=1.0", "langgraph>=1.0", "langgraph-checkpoint-sqlite>=2.0", "aiosqlite>=0.20", "langchain-openai>=1.0", "langchain-anthropic>=1.0", "langchain-google-genai>=2.0", "textual>=0.70", "typer>=0.12", "numpy>=1.26", "onnxruntime>=1.18", "transformers>=4.40", "sentence-transformers>=3.0", "langsmith>=0.2", "paramiko>=3.0"]
 
 [project.scripts]
 devx = "devx.cli.app:main"

@@ -6,6 +6,10 @@ import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from devx.harness.backend import WorkspaceBackend
 
 
 def file_hash(path: Path) -> str | None:
@@ -74,10 +78,35 @@ class ChangeJournal:
             rows = conn.execute("SELECT run_id,path,before_hash,after_hash,approved,backup_path FROM changes WHERE run_id=? ORDER BY id", (run_id,)).fetchall()
         return [Change(row[0], row[1], row[2], row[3], bool(row[4]), row[5]) for row in rows]
 
-    def rollback(self, run_id: str) -> list[str]:
+    def rollback(self, run_id: str, backend: WorkspaceBackend | None = None) -> list[str]:
         """Restore only files that still match the recorded post-change hash."""
         restored: list[str] = []
         for change in reversed(self.for_run(run_id)):
+            if backend is not None and getattr(backend, "is_remote", False):
+                import posixpath
+                clean = change.path.strip().replace("\\", "/")
+                if clean.startswith("/"):
+                    root_norm = posixpath.normpath(backend.root)
+                    clean_norm = posixpath.normpath(clean)
+                    if clean_norm.startswith(root_norm):
+                        rel = posixpath.relpath(clean_norm, root_norm)
+                    else:
+                        rel = clean_norm.lstrip("/")
+                else:
+                    rel = clean
+
+                if backend.file_hash(rel) != change.after_hash:
+                    continue
+                if change.backup_path:
+                    backup = Path(change.backup_path)
+                    if backup.exists():
+                        backend.write_bytes(rel, backup.read_bytes())
+                        restored.append(change.path)
+                elif change.before_hash is None and backend.exists(rel):
+                    backend.remove(rel)
+                    restored.append(change.path)
+                continue
+
             target = Path(change.path)
             if file_hash(target) != change.after_hash:
                 continue

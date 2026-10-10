@@ -41,6 +41,17 @@ def test_model_catalog_contains_only_agent_ready_models_for_each_provider():
         assert len({model.identifier for model in models}) == len(models)
 
 
+def test_openrouter_free_model_in_catalog():
+    models = catalog_models("openrouter")
+    openrouter_free = next((m for m in models if m.identifier == "openrouter/free"), None)
+    assert openrouter_free is not None
+    assert openrouter_free.free is True
+    assert openrouter_free.tool_calling is True
+    assert openrouter_free.coding is True
+    assert openrouter_free.context_length == 200_000
+    assert openrouter_free.agent_ready is True
+
+
 def test_list_models_sorts_and_identifies_free_and_tool_models(monkeypatch):
     class Response:
         def __enter__(self):
@@ -54,6 +65,7 @@ def test_list_models_sorts_and_identifies_free_and_tool_models(monkeypatch):
                 "data": [
                     {"id": "paid-model", "pricing": {"prompt": "1", "completion": "1"}},
                     {"id": "free-model:free", "supported_parameters": ["tools"]},
+                    {"id": "openrouter/free", "context_length": 200000},
                     {"id": "zero-priced", "pricing": {"prompt": "0", "completion": "0"}},
                     {"name": "invalid-without-id"},
                 ]
@@ -63,9 +75,10 @@ def test_list_models_sorts_and_identifies_free_and_tool_models(monkeypatch):
 
     models = list_models("https://example.test/v1", "secret")
 
-    assert [model.identifier for model in models] == ["free-model:free", "paid-model", "zero-priced"]
+    assert [model.identifier for model in models] == ["free-model:free", "openrouter/free", "paid-model", "zero-priced"]
     assert models[0] == ModelInfo("free-model:free", free=True, tool_calling=True)
-    assert models[2].free is True
+    assert models[1] == ModelInfo("openrouter/free", 200000, free=True, tool_calling=True)
+    assert models[3].free is True
 
 
 def test_list_models_converts_provider_errors_to_configuration_error(monkeypatch):

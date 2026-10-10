@@ -10,7 +10,9 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from devx.harness.backend import WorkspaceBackend
 from devx.harness.changes import ChangeJournal, file_hash
+from devx.harness.local_backend import LocalWorkspaceBackend
 from devx.harness.permissions import PermissionError, PermissionPolicy
 from devx.harness.runtime import CancellationToken, RunCancelled
 
@@ -26,58 +28,67 @@ class WorkspaceTools:
     _preview_bytes = 12_000
 
     def __init__(self, policy: PermissionPolicy, *, max_bytes: int = 1_000_000, timeout: float = 120,
-                 journal: ChangeJournal | None = None, run_id: str = "adhoc", cancellation: CancellationToken | None = None):
+                 journal: ChangeJournal | None = None, run_id: str = "adhoc", cancellation: CancellationToken | None = None,
+                 backend: WorkspaceBackend | None = None):
         self.policy, self.max_bytes, self.timeout = policy, max_bytes, timeout
         self.journal, self.run_id = journal, run_id
         self.cancellation = cancellation or CancellationToken()
+        self.backend = backend or LocalWorkspaceBackend(policy.workspace)
 
     def requires_approval(self, action: str, target: str | Path) -> bool:
         """Return whether a configured policy still needs an approval callback."""
         return self.policy.requires_approval(action, target)
 
+    def _normalize_target_path(self, path: str | Path) -> Path:
+        clean = str(path).strip().replace("\\", "/")
+        if getattr(self.backend, "is_remote", False) and clean.startswith("/"):
+            import posixpath
+            root_norm = posixpath.normpath(self.backend.root)
+            clean_norm = posixpath.normpath(clean)
+            if clean_norm.startswith(root_norm):
+                return Path(posixpath.relpath(clean_norm, root_norm))
+            return Path(clean_norm.lstrip("/"))
+        return Path(path)
+
     def read(self, path: str | Path) -> ToolResult:
-        target = self.policy.path(Path(path))
+        target = self.policy.path(self._normalize_target_path(path))
         try:
-            with target.open("rb") as stream:
-                data = stream.read(self.max_bytes)
+            rel = target.relative_to(self.policy.workspace).as_posix()
+            data = self.backend.read_bytes(rel, self.max_bytes)
             return ToolResult(True, data.decode("utf-8", errors="replace"))
         except (OSError, UnicodeError) as exc:
             return ToolResult(False, str(exc))
 
     def write(self, path: str | Path, content: str, *, approved: bool = False) -> ToolResult:
-        target = self._approved_path(path, approved)
+        target = self._approved_path(self._normalize_target_path(path), approved)
         encoded = content.encode("utf-8")
         if len(encoded) > self.max_bytes:
             return ToolResult(False, f"Content exceeds the {self.max_bytes}-byte file limit")
-        before = file_hash(target)
+        rel = target.relative_to(self.policy.workspace).as_posix()
+        before = self.backend.file_hash(rel)
         backup = None
-        if self.journal and target.exists():
+        if self.journal and self.backend.exists(rel):
             backup_dir = self.journal.db_path.parent / "backups" / self.run_id
             relative = target.relative_to(self.policy.workspace)
             backup = backup_dir / relative.parent / f"{relative.name}.{before}"
             backup.parent.mkdir(parents=True, exist_ok=True)
             if not backup.exists():
-                shutil.copy2(target, backup)
-        temporary = target.with_name(f".{target.name}.devx-tmp-{uuid.uuid4().hex}")
+                try:
+                    backup.write_bytes(self.backend.read_bytes(rel, self.max_bytes))
+                except OSError:
+                    pass
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            temporary.write_bytes(encoded)
-            temporary.replace(target)
+            self.backend.write_bytes(rel, encoded)
+            after = self.backend.file_hash(rel)
             if self.journal:
-                self.journal.record(self.run_id, target, before, file_hash(target), approved, backup)
+                self.journal.record(self.run_id, target, before, after, approved, backup)
             return ToolResult(True, f"Wrote {target}")
         except (OSError, UnicodeError) as exc:
             return ToolResult(False, str(exc))
-        finally:
-            if temporary.exists():
-                try:
-                    temporary.unlink()
-                except OSError:
-                    pass
 
     def preview_write(self, path: str | Path, content: str) -> str:
         """Return a bounded unified diff for a proposed write without mutating files."""
-        target = self.policy.path(Path(path))
+        target = self.policy.path(self._normalize_target_path(path))
         current = self._read_preview(target)
         proposed = content.encode("utf-8")[: self._preview_bytes].decode("utf-8", errors="replace")
         diff = difflib.unified_diff(
@@ -91,14 +102,15 @@ class WorkspaceTools:
     def replace(self, path: str | Path, old: str, new: str, *, expected_hash: str | None = None,
                 approved: bool = False) -> ToolResult:
         """Apply an exact, optimistic-concurrency-checked text replacement."""
-        target = self._approved_path(path, approved)
+        target = self._approved_path(self._normalize_target_path(path), approved)
+        rel = target.relative_to(self.policy.workspace).as_posix()
         try:
-            if target.stat().st_size > self.max_bytes:
+            if self.backend.stat_size(rel) > self.max_bytes:
                 return ToolResult(False, f"File exceeds the {self.max_bytes}-byte file limit")
-            current = target.read_text(encoding="utf-8")
+            current = self.backend.read_bytes(rel, self.max_bytes).decode("utf-8")
         except (OSError, UnicodeError) as exc:
             return ToolResult(False, str(exc))
-        current_hash = file_hash(target)
+        current_hash = self.backend.file_hash(rel)
         if expected_hash is not None and current_hash != expected_hash:
             return ToolResult(False, "CONFLICT: file changed since it was inspected")
         if old not in current:
@@ -111,7 +123,7 @@ class WorkspaceTools:
 
     def preview_replace(self, path: str | Path, old: str, new: str) -> str:
         """Return a bounded diff for an exact replacement proposal."""
-        target = self.policy.path(Path(path))
+        target = self.policy.path(self._normalize_target_path(path))
         current = self._read_preview(target)
         proposed = current.replace(old, new, 1)
         diff = difflib.unified_diff(
@@ -123,6 +135,31 @@ class WorkspaceTools:
         return self._bound_text("".join(diff))
 
     def search(self, query: str, path: str | Path = ".") -> ToolResult:
+        if getattr(self.backend, "is_remote", False):
+            try:
+                rel_root = str(path).strip().replace("\\", "/").lstrip("./")
+                files = self.backend.walk_files(max_files=500)
+                output = bytearray()
+                for rel in files:
+                    if rel_root and not rel.startswith(rel_root):
+                        continue
+                    try:
+                        if self.backend.stat_size(rel) > self.max_bytes:
+                            continue
+                        content = self.backend.read_bytes(rel, self.max_bytes).decode("utf-8", errors="replace")
+                    except (OSError, UnicodeError):
+                        continue
+                    for number, line in enumerate(content.splitlines(), 1):
+                        if query.lower() in line.lower():
+                            encoded = f"{rel}:{number}:{line}\n".encode()
+                            remaining = self.max_bytes - len(output)
+                            if remaining <= 0:
+                                return ToolResult(True, bytes(output).decode("utf-8", errors="replace"))
+                            output.extend(encoded[:remaining])
+                return ToolResult(True, bytes(output).decode("utf-8", errors="replace"))
+            except OSError as exc:
+                return ToolResult(False, str(exc))
+
         target = self.policy.path(Path(path))
         try:
             output = bytearray()
@@ -158,54 +195,13 @@ class WorkspaceTools:
             args = self.policy.command(command, approved=True)
             if self.policy.requires_approval("shell", " ".join(args)) and not approved:
                 return ToolResult(False, "Command requires explicit approval")
-            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-            process = subprocess.Popen(  # nosec B603
+            backend_res = self.backend.run_command(
                 args,
-                cwd=self.policy.workspace,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=False,
-                creationflags=creationflags,
-                start_new_session=os.name != "nt",
+                timeout=self.timeout,
+                cancellation=self.cancellation,
+                max_bytes=self.max_bytes,
             )
-            started = time.monotonic()
-            output = bytearray()
-
-            def drain_output() -> None:
-                if process.stdout is None:
-                    return
-                while True:
-                    chunk = process.stdout.read(8192)
-                    if not chunk:
-                        return
-                    remaining = self.max_bytes - len(output)
-                    if remaining > 0:
-                        output.extend(chunk[:remaining])
-
-            reader = threading.Thread(target=drain_output, daemon=True)
-            reader.start()
-            timed_out = False
-            while process.poll() is None:
-                if self.cancellation.cancelled:
-                    self._terminate(process)
-                    raise RunCancelled("Command cancelled")
-                if time.monotonic() - started > self.timeout:
-                    self._terminate(process)
-                    timed_out = True
-                    break
-                time.sleep(0.02)
-            process.wait()
-            reader.join(timeout=1)
-            if reader.is_alive() and process.stdout is not None:
-                process.stdout.close()
-                reader.join(timeout=1)
-            text = bytes(output).decode("utf-8", errors="replace")
-            if timed_out:
-                bounded = ("Command timed out\n" + text).encode("utf-8")[:self.max_bytes].decode(
-                    "utf-8", errors="replace"
-                )
-                return ToolResult(False, bounded, process.returncode)
-            return ToolResult(process.returncode == 0, text, process.returncode)
+            return ToolResult(backend_res.ok, backend_res.output, backend_res.exit_code)
         except (OSError, subprocess.TimeoutExpired) as exc:
             return ToolResult(False, str(exc))
 
@@ -227,9 +223,9 @@ class WorkspaceTools:
 
     def _read_preview(self, target: Path) -> str:
         try:
-            with target.open("rb") as stream:
-                return stream.read(self._preview_bytes).decode("utf-8", errors="replace")
-        except FileNotFoundError:
+            rel = target.relative_to(self.policy.workspace).as_posix()
+            return self.backend.read_bytes(rel, self._preview_bytes).decode("utf-8", errors="replace")
+        except (FileNotFoundError, OSError):
             return ""
 
     def _bound_text(self, value: str) -> str:
