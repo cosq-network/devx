@@ -2,6 +2,9 @@
 
 ## Unreleased (0.2.0-dev.0)
 
+- Fixed `devx init` crashing on Windows: `UserConfig`/`PROVIDERS`/`catalog_models` are now imported from `devx.configuration` (they are not part of `devx.config`'s `Settings` module).
+- Fixed a Windows console crash class: CLI status output (`doctor`, `health`, `verify`, `init`, `report`) no longer prints glyphs the legacy cp1252 console cannot encode (`✓`/`✗`/`⚠`/`↩`/`→` are now `[ok]`/`[err]`/`[warn]`/`[rev]`/`->`), so piped/redirected output works in any terminal.
+
 - Added Remote SSH Workspace support: Pluggable `WorkspaceBackend` architecture with `SshWorkspaceBackend` (SFTP filesystem operations, remote atomic edits, remote command/test execution, and remote path sandboxing) configurable via URI (`ssh://user@host:port/path`) or CLI options (`--remote`, `--ssh-key`).
 - Added governed remote execution hardening: dropped SSH transports are detected and transparently reconnected with backoff (clear `ConnectionError` on failure), remote commands run under `setsid` with process-group cancellation on cancel/timeout, and `devx doctor --remote <uri>` preflights connection, path, writability, git, and venv before a run.
 - Added a container workspace backend (`ContainerWorkspaceBackend`) targeting `container://name/path` or `docker://name/path` via `docker exec`, selectable with `devx ask --container` or `DEVX_CONTAINER` (no bind mount required).

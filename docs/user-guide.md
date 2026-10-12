@@ -139,7 +139,7 @@ devx doctor
 devx health
 ```
 
-You should see all checks marked healthy (`✓`) for configuration, session database, and optional packages.
+You should see all checks marked healthy (`[ok]`) for configuration, session database, and optional packages.
 
 > Working against a remote server or container instead? Preflight it before you
 > trust it — same command, with a target URI:

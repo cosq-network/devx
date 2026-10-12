@@ -328,7 +328,7 @@ if typer is not None:
             else:
                 print(f"remote: {report['username']}@{report['remote']}:{report['path']}")
                 for name, check in report["checks"].items():
-                    icon = {"ok": "✓", "missing": "⚠", "error": "✗", "skipped": "–"}.get(check.get("status"), "?")
+                    icon = {"ok": "[ok]", "missing": "[warn]", "error": "[err]", "skipped": "[skip]"}.get(check.get("status"), "?")
                     line = f"  {icon} {name}: {check.get('status')}"
                     if check.get("detail"):
                         line += f" ({check['detail']})"
@@ -389,7 +389,7 @@ if typer is not None:
         else:
             print(f"Overall status: {overall}")
             for r in results:
-                status_icon = {"healthy": "✓", "degraded": "⚠", "unhealthy": "✗"}.get(r.status, "?")
+                status_icon = {"healthy": "[ok]", "degraded": "[warn]", "unhealthy": "[err]"}.get(r.status, "?")
                 latency = f" ({r.latency_ms:.1f}ms)" if r.latency_ms else ""
                 print(f"  {status_icon} {r.component}: {r.status}{latency}")
                 if r.details:
@@ -493,7 +493,7 @@ if typer is not None:
         non_interactive: bool = typer.Option(False, "--non-interactive", "-y", help="Skip prompts, use defaults"),
     ):
         """Initialize devx configuration for the current project."""
-        from devx.config import UserConfig, PROVIDERS, catalog_models
+        from devx.configuration import UserConfig, PROVIDERS, catalog_models
         from devx.harness.testing import detect_test_command
         from pathlib import Path
         import json
@@ -605,7 +605,7 @@ if typer is not None:
         if api_key:
             user_config.set_api_key(api_key)
 
-        typer.echo("\n✓ Configuration saved:")
+        typer.echo("\nConfiguration saved:")
         typer.echo(f"  Provider: {provider}")
         typer.echo(f"  Model: {model}")
         typer.echo(f"  Base URL: {base_url}")
@@ -833,7 +833,7 @@ if typer is not None:
         elif not records:
             print("No recorded changes to verify")
         else:
-            icons = {"intact": "✓", "reverted": "↩", "conflict": "✗", "missing": "✗"}
+            icons = {"intact": "[ok]", "reverted": "[rev]", "conflict": "[err]", "missing": "[err]"}
             for record in records:
                 icon = icons.get(record["status"], "?")
                 hashes = f"{(record['before_hash'] or '-')[:8]} -> {(record['after_hash'] or '-')[:8]}"

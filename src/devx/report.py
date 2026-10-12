@@ -157,18 +157,18 @@ def render_report(report: dict[str, Any]) -> str:
     if report["checks"]:
         lines += ["", "## Checks", ""]
         for check in report["checks"]:
-            icon = "✓" if check["ok"] else "✗"
+            icon = "[ok]" if check["ok"] else "[err]"
             extra = f" (exit {check['exit_code']})" if check.get("exit_code") is not None else ""
             lines.append(f"- {icon} {check['name']}: {'passed' if check['ok'] else 'failed'}{extra}")
 
     if report["changes"]:
-        lines += ["", "## Files changed", "", "| path | status | approved | before → after |",
+        lines += ["", "## Files changed", "", "| path | status | approved | before -> after |",
                   "| --- | --- | --- | --- |"]
         for change in report["changes"]:
             approved = "yes" if change["approved"] else "no"
             lines.append(
                 f"| `{change['path']}` | {change['status']} | {approved} | "
-                f"`{_short_hash(change['before_hash'])}` → `{_short_hash(change['after_hash'])}` |"
+                f"`{_short_hash(change['before_hash'])}` -> `{_short_hash(change['after_hash'])}` |"
             )
         lines += ["", "## Suggested PR description", "", _suggested_pr(report)]
 

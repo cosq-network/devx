@@ -116,8 +116,17 @@ def test_render_report_contains_key_sections(tmp_path: Path):
 def test_render_report_includes_checks(tmp_path: Path):
     store, journal, _ = _fixture(tmp_path)
     markdown = render_report(build_report(store, journal, "demo"))
-    assert "✓ test: passed" in markdown
-    assert "✓ lint: passed" in markdown
+    assert "[ok] test: passed" in markdown
+    assert "[ok] lint: passed" in markdown
+
+
+def test_render_report_is_console_safe_ascii(tmp_path: Path):
+    # Rendered markdown is echoed to the console (`devx report` without --out),
+    # which on Windows legacy consoles/pipes encodes with cp1252 and would crash
+    # on glyphs like ✓ (U+2713). Guard that the output is cp1252-encodable.
+    store, journal, _ = _fixture(tmp_path)
+    markdown = render_report(build_report(store, journal, "demo"))
+    assert markdown.encode("cp1252")  # raises UnicodeEncodeError on regression
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
