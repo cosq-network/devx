@@ -85,3 +85,28 @@ def format_cost(amount: float | None) -> str:
     if abs(amount) < 0.01:
         return f"${amount:.4f}"
     return f"${amount:.2f}"
+
+
+def render_usage_report(report: dict, *, title: str = "Token usage") -> str:
+    """Render an aggregated usage report (from ``SessionStore.aggregate_usage``)
+    as a portable Markdown receipt."""
+    lines = [f"# {title}", ""]
+    lines.append(f"- Calls: **{report['calls']}**")
+    lines.append(
+        f"- Tokens: prompt **{report['prompt_tokens']}** + "
+        f"completion **{report['completion_tokens']}** = **{report['total_tokens']}**"
+    )
+    lines.append(f"- Estimated cost: **{format_cost(report['estimated_cost_usd'])}**")
+    if report.get("unpriced_models"):
+        lines.append(f"- Unpriced models (cost excluded): {', '.join(report['unpriced_models'])}")
+    if report.get("by_model"):
+        lines += ["", "| provider | model | calls | prompt | completion | total | est. cost |",
+                  "| --- | --- | --- | --- | --- | --- | --- |"]
+        for item in report["by_model"]:
+            lines.append(
+                f"| {item['provider']} | {item['model']} | {item['calls']} | "
+                f"{item['prompt_tokens']} | {item['completion_tokens']} | "
+                f"{item['total_tokens']} | {format_cost(item['estimated_cost_usd'])} |"
+            )
+    lines.append("")
+    return "\n".join(lines)

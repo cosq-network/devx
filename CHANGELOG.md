@@ -9,6 +9,11 @@
 - Added per-model pricing and cost reporting: token usage is persisted to the session DB and surfaced with `devx usage` (`pricing.py`).
 - Added `devx audit export` for a portable audit trail of sessions, events, file changes, DLQ entries, and usage (`audit.py`).
 - Added file-by-file change review: `devx changes list|accept|reject` reverts individual recorded files with the same hash-guarded undo.
+- Added drift verification: `devx verify` compares the workspace against the recorded change journal — each change is reported `intact`, `reverted`, `conflict`, or `missing` (`--run`, `--remote`, `--container`, `--json`; exits 1 on conflict/missing).
+- Added a secret guard: agent reads and search results are scanned for API keys, tokens, and private keys with `warn`/`redact`/`block` modes (`DEVX_SECRET_SCAN`), plus a CI-friendly `devx scan-secrets [path] [--json]` command (`secrets.py`).
+- Added PR-ready reports: `devx report <session|run>` stitches the agent event timeline, hash-guarded changes, lint/test results, and token cost into Markdown or JSON with a suggested PR description (`report.py`).
+- Added per-run cost receipts: `devx usage --run <id> [--markdown]` renders a Markdown receipt (`SessionStore.aggregate_usage` now filters by run id).
+- Added disposable remote workspaces for demos and onboarding: `devx lab up`/`down` boots and removes the SSH container used by the e2e suite and prints ready-to-paste `--remote`/`--container` URIs (`harness/lab.py`).
 - Added a hermetic, opt-in SSH end-to-end test suite (`tests/test_remote_e2e.py`) plus a dedicated CI job, exercising real connection, sandboxing, process-group cancellation, and rollback.
 - Added `docs/governed-remote.md` and `docs/threat-model.md`.
 - Added token consumption optimization: Test Diagnostic Distillation (`distill_test_output`) extracting isolated failure assertions, line diagnostics, and traceback frames from test runners (`pytest`, `vitest`, `jest`, `ruff`) to remove boilerplate and irrelevant output from repair loops. Token savings are workload-dependent; the repository ships an offline benchmark harness (`scripts/benchmark.py`) instead of publishing fixed percentages.

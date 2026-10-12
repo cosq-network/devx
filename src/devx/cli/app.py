@@ -634,10 +634,12 @@ if typer is not None:
     @app.command()
     def usage(
         session: str | None = typer.Option(None, "--session", "-s", help="Limit to a single session id or name"),
+        run: str | None = typer.Option(None, "--run", help="Limit to a single run id"),
         json_output: bool = typer.Option(False, "--json"),  # type: ignore[attr-defined]
+        markdown: bool = typer.Option(False, "--markdown", "-m", help="Render a Markdown usage receipt"),
     ):
         """Show recorded token usage and estimated USD cost."""
-        from devx.pricing import format_cost
+        from devx.pricing import format_cost, render_usage_report
 
         settings = Settings.load()
         store = SessionStore(settings.session_db)
@@ -645,7 +647,20 @@ if typer is not None:
         if session:
             loaded = store.load(session)
             session_id = loaded["id"] if loaded else session
-        report = store.aggregate_usage(session_id)
+        run_id = run
+        if run_id and session_id is None:
+            found_id, _ = store.find_run(run_id)
+            session_id = found_id
+        report = store.aggregate_usage(session_id, run_id)
+
+        if markdown:
+            title = "Usage receipt"
+            if run_id:
+                title += f" · run {run_id}"
+            elif session_id:
+                title += f" · session {session_id}"
+            print(render_usage_report(report, title=title))
+            return
 
         if json_output:
             print(json.dumps(report))
@@ -773,6 +788,150 @@ if typer is not None:
             return
 
         raise typer.BadParameter("Action must be list, accept, or reject")  # type: ignore[attr-defined]
+
+    @app.command()
+    def verify(
+        run: str | None = typer.Option(None, "--run", help="Verify only a single run id"),  # type: ignore[attr-defined]
+        json_output: bool = typer.Option(False, "--json"),  # type: ignore[attr-defined]
+        remote: str | None = typer.Option(None, "--remote", help="Remote SSH workspace URI"),  # type: ignore[attr-defined]
+        container: str | None = typer.Option(None, "--container", help="Container workspace URI"),  # type: ignore[attr-defined]
+    ):
+        """Verify the workspace against the recorded change journal (drift check).
+
+        Every recorded change is reported as intact, reverted, conflict, or
+        missing by comparing current file hashes with those the agent recorded.
+        Exits 1 when any change is in conflict or missing.
+        """
+        from devx.harness.changes import ChangeJournal
+
+        settings = Settings.load()
+        journal = ChangeJournal(settings.session_db)
+        backend = _workspace_backend(remote, container)
+        try:
+            records = journal.verify(run, backend=backend)
+        finally:
+            if backend is not None:
+                try:
+                    backend.close()
+                except Exception:
+                    pass
+
+        if json_output:
+            print(json.dumps(records, default=str))
+        elif not records:
+            print("No recorded changes to verify")
+        else:
+            icons = {"intact": "✓", "reverted": "↩", "conflict": "✗", "missing": "✗"}
+            for record in records:
+                icon = icons.get(record["status"], "?")
+                hashes = f"{(record['before_hash'] or '-')[:8]} -> {(record['after_hash'] or '-')[:8]}"
+                print(f"{icon} {record['status']:9} {record['path']}  {hashes}")
+        if any(record["status"] in {"conflict", "missing"} for record in records):
+            raise typer.Exit(1)
+
+    @app.command("scan-secrets")
+    def scan_secrets(
+        target: str = typer.Argument(".", help="File or directory to scan"),  # type: ignore[attr-defined]
+        json_output: bool = typer.Option(False, "--json"),  # type: ignore[attr-defined]
+    ):
+        """Scan files for potential secrets (API keys, tokens, private keys).
+
+        Exits 1 when any potential secret is found, so the command can gate CI.
+        """
+        from devx.secrets import SecretHit, scan_file, scan_tree
+
+        path = Path(target).expanduser()
+        if path.is_dir():
+            hits: list[tuple[str, SecretHit]] = scan_tree(path)
+        elif path.is_file():
+            hits = [(path.as_posix(), hit) for hit in scan_file(path)]
+        else:
+            raise typer.BadParameter(f"Path not found: {target}")  # type: ignore[attr-defined]
+
+        if json_output:
+            print(json.dumps(
+                [
+                    {"file": rel, "kind": hit.kind, "line": hit.line, "snippet": hit.snippet}
+                    for rel, hit in hits
+                ],
+                default=str,
+            ))
+        else:
+            if not hits:
+                print("No secrets detected")
+            for rel, hit in hits:
+                print(f"{rel}:{hit.line}  {hit.kind}  {hit.snippet}")
+        if hits:
+            raise typer.Exit(1)
+
+    @app.command()
+    def report(
+        identifier: str = typer.Argument(..., help="Session id/name or run id"),  # type: ignore[attr-defined]
+        json_output: bool = typer.Option(False, "--json"),  # type: ignore[attr-defined]
+        out: str | None = typer.Option(None, "--out", "-o", help="Write Markdown report to a file"),  # type: ignore[attr-defined]
+    ):
+        """Render a PR-ready summary of a session or run.
+
+        Combines the agent event timeline, hash-guarded change journal, lint/test
+        results, and token cost into one Markdown or JSON report.
+        """
+        from devx.harness.changes import ChangeJournal
+        from devx.report import build_report, render_report
+
+        settings = Settings.load()
+        store = SessionStore(settings.session_db)
+        journal = ChangeJournal(settings.session_db)
+        try:
+            data = build_report(store, journal, identifier)
+        except KeyError as exc:
+            raise typer.BadParameter(str(exc))  # type: ignore[attr-defined]
+
+        if json_output:
+            print(json.dumps(data, default=str))
+            return
+        markdown = render_report(data)
+        if out:
+            destination = Path(out).expanduser()
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(markdown, encoding="utf-8")
+            typer.echo(f"Wrote report to {destination}")  # type: ignore[attr-defined]
+        else:
+            typer.echo(markdown)  # type: ignore[attr-defined]
+
+    @app.command()
+    def lab(
+        action: str = typer.Argument(..., help="up or down"),  # type: ignore[attr-defined]
+        name: str | None = typer.Argument(None, help="Container name (required for down)"),  # type: ignore[attr-defined]
+        json_output: bool = typer.Option(False, "--json"),  # type: ignore[attr-defined]
+    ):
+        """Spin up or tear down a disposable remote workspace container.
+
+        ``devx lab up`` boots a throwaway SSH container with an empty workspace
+        and prints ready-to-paste ``--remote`` and ``--container`` URIs for
+        demos and onboarding. ``devx lab down <name>`` tears it down.
+        """
+        from devx.harness.lab import start_lab, stop_lab
+
+        if action == "up":
+            try:
+                info = start_lab()
+            except RuntimeError as exc:
+                raise typer.BadParameter(str(exc))  # type: ignore[attr-defined]
+            if json_output:
+                print(json.dumps(info))
+                return
+            typer.echo(f"Started disposable remote workspace {info['name']}")  # type: ignore[attr-defined]
+            typer.echo(f"  remote:   devx ask --remote {info['ssh_uri']} --approve-all 'your task here'")  # type: ignore[attr-defined]
+            typer.echo(f"  container: devx ask --container {info['container_uri']} --approve-all 'your task here'")  # type: ignore[attr-defined]
+            typer.echo(f"  doctor:   devx doctor --remote {info['ssh_uri']}")  # type: ignore[attr-defined]
+            typer.echo(f"  stop:     devx lab down {info['name']}")  # type: ignore[attr-defined]
+        elif action == "down":
+            if not name:
+                raise typer.BadParameter("Provide the container name: devx lab down <name>")  # type: ignore[attr-defined]
+            stop_lab(name)
+            typer.echo(f"Stopped lab container {name}")  # type: ignore[attr-defined]
+        else:
+            raise typer.BadParameter("Use: devx lab up | devx lab down <name>")  # type: ignore[attr-defined]
 
     @app.command()
     def team(

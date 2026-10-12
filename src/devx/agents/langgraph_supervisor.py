@@ -193,7 +193,8 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
     tools = WorkspaceTools(PermissionPolicy.from_settings(settings),
                            max_bytes=settings.max_file_bytes, timeout=settings.command_timeout,
                            journal=journal, run_id=run_id, cancellation=cancellation,
-                           backend=backend)
+                           backend=backend,
+                           secret_scan_mode=getattr(settings, "secret_scan_mode", "warn"))
 
     def approve(action: str, target: str, reason: str = "") -> bool:
         return approvals.allows(run_id, action, target, reason)

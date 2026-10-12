@@ -52,6 +52,9 @@ CONTEXT_MIN_MESSAGES = 2
 CONTEXT_MIN_CHARS = 256
 CONTEXT_SUMMARY_MIN_CHARS = 128
 
+# Secret-scan behavior for agent reads
+SECRET_SCAN_MODE_DEFAULT = "warn"  # off | warn | redact | block
+
 # Context budget modes
 CONTEXT_BUDGET_MODE_FIXED = "fixed"
 CONTEXT_BUDGET_MODE_ADAPTIVE = "adaptive"
@@ -157,6 +160,10 @@ class Settings(BaseModel):
     remote_ssh: str = Field(default="", description="Remote SSH workspace URI")
     ssh_key_path: str = Field(default="", description="Path to SSH private key")
     container: str = Field(default="", description="Container workspace URI (container://name/path)")
+    secret_scan_mode: str = Field(
+        default=SECRET_SCAN_MODE_DEFAULT,
+        description="Secret scanning on agent reads: off, warn, redact, or block",
+    )
 
     # ── Pydantic V2 validators ──
 
@@ -368,6 +375,13 @@ class Settings(BaseModel):
         policy_preset = str(
             get("DEVX_POLICY_PRESET", str(project.get("policy_preset", "")), "DEV_POLICY_PRESET")
         ).strip()
+        secret_scan_mode = str(
+            get(
+                "DEVX_SECRET_SCAN",
+                str(project.get("secret_scan_mode", SECRET_SCAN_MODE_DEFAULT)),
+                "DEV_SECRET_SCAN",
+            )
+        ).strip().lower()
 
         # Resolve project config-derived fields
         permission_rules = tuple(item for item in raw_permissions if isinstance(item, dict))
@@ -418,6 +432,7 @@ class Settings(BaseModel):
             remote_ssh=remote_ssh,
             ssh_key_path=ssh_key_path,
             container=container,
+            secret_scan_mode=secret_scan_mode,
         )
 
     # ── Validation ────────────────────────────────────────────────────
@@ -449,6 +464,10 @@ class Settings(BaseModel):
                     f"Unknown policy preset {self.policy_preset!r}; "
                     f"choose from {', '.join(sorted(POLICY_PRESETS))}"
                 )
+        if self.secret_scan_mode not in {"off", "warn", "redact", "block"}:
+            raise ValueError(
+                f"secret_scan_mode must be one of off, warn, redact, block; got {self.secret_scan_mode!r}"
+            )
 
     # ── Convenience accessor ──────────────────────────────────────────
 

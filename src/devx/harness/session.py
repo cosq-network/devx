@@ -144,6 +144,27 @@ class SessionStore:
             rows = conn.execute(query, args).fetchall()
         return [{"run_id": row[0], "event": json.loads(row[1]), "created_at": row[2]} for row in rows]
 
+    def find_run(self, run_id: str) -> tuple[str | None, list[dict[str, Any]]]:
+        """Locate a run id across sessions.
+
+        Returns ``(session_id, events)`` where ``session_id`` is ``None`` when
+        the run has no owning session (events only). Runs are keyed under the
+        session id, the session *name*, or their own run id when the run was
+        anonymous, so this probes the events table directly instead of assuming
+        a particular key.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT session_id FROM session_events WHERE run_id=? ORDER BY id LIMIT 1",
+                (run_id,),
+            ).fetchone()
+        if not row:
+            return None, []
+        key = row[0]
+        loaded = self.load(key) if key else None
+        session_id = loaded["id"] if loaded else key
+        return session_id, self.events(key, run_id=run_id)
+
     # Dead Letter Queue methods
     def add_to_dlq(self, session_id: str, run_id: str, error: str, state: dict[str, Any], metadata: dict[str, Any] | None = None) -> int:
         """Add a failed run to the dead letter queue."""
@@ -240,11 +261,12 @@ class SessionStore:
             )
         return len(rows)
 
-    def aggregate_usage(self, session_id: str | None = None) -> dict[str, Any]:
+    def aggregate_usage(self, session_id: str | None = None, run_id: str | None = None) -> dict[str, Any]:
         """Aggregate recorded token usage and estimate USD cost.
 
         Cost is the sum of priced models; ``unpriced_models`` lists identifiers
         with no configured price so the estimate is never silently misleading.
+        Filtering is by session and/or run id; both are optional.
         """
         from devx.pricing import estimate_cost
 
@@ -252,10 +274,16 @@ class SessionStore:
             "SELECT model, provider, COUNT(*), SUM(prompt_tokens), "
             "SUM(completion_tokens), SUM(total_tokens) FROM token_usage"
         )
+        filters: list[str] = []
         args: tuple[Any, ...] = ()
         if session_id:
-            query += " WHERE session_id=?"
-            args = (session_id,)
+            filters.append("session_id=?")
+            args += (session_id,)
+        if run_id:
+            filters.append("run_id=?")
+            args += (run_id,)
+        if filters:
+            query += " WHERE " + " AND ".join(filters)
         query += " GROUP BY model, provider ORDER BY SUM(total_tokens) DESC"
         with self._connect() as conn:
             rows = conn.execute(query, args).fetchall()

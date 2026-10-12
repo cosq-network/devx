@@ -6,7 +6,7 @@ import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from devx.harness.backend import WorkspaceBackend
@@ -127,24 +127,78 @@ class ChangeJournal:
             or Path(recorded_norm).name == Path(requested_norm).name
         )
 
+    @staticmethod
+    def _rel(change_path: str, backend: WorkspaceBackend | None) -> str:
+        """Resolve a recorded change path to a backend-relative path.
+
+        Local changes are stored as absolute paths; remote/container backends
+        work with paths relative to their workspace root.
+        """
+        if backend is not None and getattr(backend, "is_remote", False):
+            import posixpath
+            clean = change_path.strip().replace("\\", "/")
+            if clean.startswith("/"):
+                root_norm = posixpath.normpath(backend.root)
+                clean_norm = posixpath.normpath(clean)
+                if clean_norm.startswith(root_norm):
+                    return posixpath.relpath(clean_norm, root_norm)
+                return clean_norm.lstrip("/")
+            return clean
+        return change_path
+
+    def verify(self, run_id: str | None = None, backend: WorkspaceBackend | None = None) -> list[dict[str, Any]]:
+        """Compare recorded change hashes against the current workspace.
+
+        Each recorded change gets one of the following statuses:
+
+        * ``intact`` — the file still matches the recorded post-change hash.
+        * ``reverted`` — the file matches its pre-change hash (restored) or a
+          created file is gone again.
+        * ``conflict`` — the file exists but matches neither recorded hash
+          (edited by hand, or by another run since).
+        * ``missing`` — a recorded file no longer exists.
+        """
+        records = self.for_run(run_id) if run_id else self.all_changes()
+        verified: list[dict[str, Any]] = []
+        for change in records:
+            rel = self._rel(change.path, backend)
+            current = (
+                backend.file_hash(rel)
+                if backend is not None
+                else file_hash(Path(change.path))
+            )
+            if change.before_hash is None:
+                status = "reverted" if current is None else (
+                    "intact" if current == change.after_hash else "conflict"
+                )
+            elif current is None:
+                status = "missing"
+            elif current == change.after_hash:
+                status = "intact"
+            elif current == change.before_hash:
+                status = "reverted"
+            else:
+                status = "conflict"
+            verified.append(
+                {
+                    "run_id": change.run_id,
+                    "path": change.path,
+                    "status": status,
+                    "current_hash": current,
+                    "before_hash": change.before_hash,
+                    "after_hash": change.after_hash,
+                    "approved": change.approved,
+                }
+            )
+        return verified
+
     def _restore_change(self, change: Change, backend: WorkspaceBackend | None) -> bool:
         """Restore a single change, honoring the recorded post-change hash.
 
         Returns ``True`` when bytes were actually restored/removed.
         """
         if backend is not None and getattr(backend, "is_remote", False):
-            import posixpath
-            clean = change.path.strip().replace("\\", "/")
-            if clean.startswith("/"):
-                root_norm = posixpath.normpath(backend.root)
-                clean_norm = posixpath.normpath(clean)
-                if clean_norm.startswith(root_norm):
-                    rel = posixpath.relpath(clean_norm, root_norm)
-                else:
-                    rel = clean_norm.lstrip("/")
-            else:
-                rel = clean
-
+            rel = self._rel(change.path, backend)
             if backend.file_hash(rel) != change.after_hash:
                 return False
             if change.backup_path:

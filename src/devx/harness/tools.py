@@ -11,6 +11,7 @@ from devx.harness.changes import ChangeJournal
 from devx.harness.local_backend import LocalWorkspaceBackend
 from devx.harness.permissions import PermissionError, PermissionPolicy
 from devx.harness.runtime import CancellationToken
+from devx.secrets import SECRET_SCAN_MODE_DEFAULT, redact_secrets, scan_secrets
 
 
 @dataclass(frozen=True)
@@ -21,10 +22,13 @@ class ToolResult:
         ok: Whether the operation succeeded.
         output: The command/output text produced.
         exit_code: Process exit code, if applicable (``None`` for read operations).
+        warning: Optional advisory attached to a successful result (e.g. a
+            secret-scan flag). Warnings never change ``ok``.
     """
     ok: bool
     output: str
     exit_code: int | None = None
+    warning: str | None = None
 
 
 class WorkspaceTools:
@@ -48,11 +52,36 @@ class WorkspaceTools:
 
     def __init__(self, policy: PermissionPolicy, *, max_bytes: int = 1_000_000, timeout: float = 120,
                  journal: ChangeJournal | None = None, run_id: str = "adhoc", cancellation: CancellationToken | None = None,
-                 backend: WorkspaceBackend | None = None):
+                 backend: WorkspaceBackend | None = None, secret_scan_mode: str = SECRET_SCAN_MODE_DEFAULT):
         self.policy, self.max_bytes, self.timeout = policy, max_bytes, timeout
         self.journal, self.run_id = journal, run_id
         self.cancellation = cancellation or CancellationToken()
         self.backend = backend or LocalWorkspaceBackend(policy.workspace)
+        self.secret_scan_mode = secret_scan_mode
+
+    def _secret_summary(self, path: str, hits: list) -> str:
+        kinds = sorted({hit.kind for hit in hits})
+        detail = ", ".join(kinds)
+        return (
+            f"Potential secret(s) detected in {path}: {detail}. "
+            f"Review before sharing this file with the model."
+        )
+
+    def _apply_secret_policy(self, rel: str, content: str) -> tuple[str, str | None]:
+        """Apply the configured secret-scan mode to read content.
+
+        Returns ``(content, warning)``. In ``block`` mode the caller receives a
+        failure; here we only redact (``redact``) or annotate (``warn``).
+        """
+        if self.secret_scan_mode == "off":
+            return content, None
+        hits = scan_secrets(content)
+        if not hits:
+            return content, None
+        warning = self._secret_summary(rel, hits)
+        if self.secret_scan_mode == "redact":
+            return redact_secrets(content), warning
+        return content, warning
 
     def requires_approval(self, action: str, target: str | Path) -> bool:
         """Return whether a configured policy still needs an approval callback."""
@@ -74,9 +103,15 @@ class WorkspaceTools:
         try:
             rel = target.relative_to(self.policy.workspace).as_posix()
             data = self.backend.read_bytes(rel, self.max_bytes)
-            return ToolResult(True, data.decode("utf-8", errors="replace"))
+            content = data.decode("utf-8", errors="replace")
         except (OSError, UnicodeError) as exc:
             return ToolResult(False, str(exc))
+        if self.secret_scan_mode == "block":
+            hits = scan_secrets(content)
+            if hits:
+                return ToolResult(False, f"Blocked by secret scan: {self._secret_summary(rel, hits)}")
+        content, warning = self._apply_secret_policy(rel, content)
+        return ToolResult(True, content, warning=warning)
 
     def write(self, path: str | Path, content: str, *, approved: bool = False) -> ToolResult:
         target = self._approved_path(self._normalize_target_path(path), approved)
@@ -153,12 +188,31 @@ class WorkspaceTools:
         )
         return self._bound_text("".join(diff))
 
+    def _line_for_output(self, rel: str, line: str) -> tuple[str | None, str | None]:
+        """Apply the secret-scan mode to one search result line.
+
+        Returns ``(line, warning)``. ``line`` is ``None`` in ``block`` mode so
+        the caller skips the line entirely rather than sending it to the model.
+        """
+        if self.secret_scan_mode == "off":
+            return line, None
+        hits = scan_secrets(line)
+        if not hits:
+            return line, None
+        warning = self._secret_summary(rel, hits)
+        if self.secret_scan_mode == "block":
+            return None, warning
+        if self.secret_scan_mode == "redact":
+            return redact_secrets(line), warning
+        return line, warning
+
     def search(self, query: str, path: str | Path = ".") -> ToolResult:
         if getattr(self.backend, "is_remote", False):
             try:
                 rel_root = str(path).strip().replace("\\", "/").lstrip("./")
                 files = self.backend.walk_files(max_files=500)
                 output = bytearray()
+                warnings: list[str] = []
                 for rel in files:
                     if rel_root and not rel.startswith(rel_root):
                         continue
@@ -169,19 +223,26 @@ class WorkspaceTools:
                     except (OSError, UnicodeError):
                         continue
                     for number, line in enumerate(content.splitlines(), 1):
-                        if query.lower() in line.lower():
-                            encoded = f"{rel}:{number}:{line}\n".encode()
-                            remaining = self.max_bytes - len(output)
-                            if remaining <= 0:
-                                return ToolResult(True, bytes(output).decode("utf-8", errors="replace"))
-                            output.extend(encoded[:remaining])
-                return ToolResult(True, bytes(output).decode("utf-8", errors="replace"))
+                        if query.lower() not in line.lower():
+                            continue
+                        line_out, warning = self._line_for_output(rel, line)
+                        if warning and warning not in warnings:
+                            warnings.append(warning)
+                        if line_out is None:
+                            continue
+                        encoded = f"{rel}:{number}:{line_out}\n".encode()
+                        remaining = self.max_bytes - len(output)
+                        if remaining <= 0:
+                            return ToolResult(True, bytes(output).decode("utf-8", errors="replace"), warning="; ".join(warnings) or None)
+                        output.extend(encoded[:remaining])
+                return ToolResult(True, bytes(output).decode("utf-8", errors="replace"), warning="; ".join(warnings) or None)
             except OSError as exc:
                 return ToolResult(False, str(exc))
 
         target = self.policy.path(Path(path), remote=self.backend.is_remote)
         try:
             output = bytearray()
+            warnings: list[str] = []
             for candidate in target.rglob("*") if target.is_dir() else [target]:
                 try:
                     candidate = self.policy.path(candidate, remote=self.backend.is_remote)
@@ -191,15 +252,21 @@ class WorkspaceTools:
                     continue
                 try:
                     for number, line in enumerate(candidate.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
-                        if query.lower() in line.lower():
-                            encoded = f"{candidate}:{number}:{line}\n".encode()
-                            remaining = self.max_bytes - len(output)
-                            if remaining <= 0:
-                                return ToolResult(True, bytes(output).decode("utf-8", errors="replace"))
-                            output.extend(encoded[:remaining])
+                        if query.lower() not in line.lower():
+                            continue
+                        line_out, warning = self._line_for_output(str(candidate), line)
+                        if warning and warning not in warnings:
+                            warnings.append(warning)
+                        if line_out is None:
+                            continue
+                        encoded = f"{candidate}:{number}:{line_out}\n".encode()
+                        remaining = self.max_bytes - len(output)
+                        if remaining <= 0:
+                            return ToolResult(True, bytes(output).decode("utf-8", errors="replace"), warning="; ".join(warnings) or None)
+                        output.extend(encoded[:remaining])
                 except OSError:
                     continue
-            return ToolResult(True, bytes(output).decode("utf-8", errors="replace"))
+            return ToolResult(True, bytes(output).decode("utf-8", errors="replace"), warning="; ".join(warnings) or None)
         except OSError as exc:
             return ToolResult(False, str(exc))
 

@@ -43,8 +43,12 @@ For the positioning statement, target users, and the core/team feature split, se
 | **Approval-gated tools** | All file writes and shell commands require explicit user approval by default |
 | **Safe review and recovery** | Approved writes show bounded diffs, are atomic and journaled, and can be undone with `/undo` |
 | **File-by-file review** | `devx changes list` / `accept` / `reject` reviews each recorded change and reverts one at a time, hash-guarded |
-| **Cost visibility** | Per-model pricing turns recorded token usage into dollars with `devx usage` |
+| **Cost visibility** | Per-model pricing turns recorded token usage into dollars with `devx usage`, including per-run receipts (`devx usage --run <id> --markdown`) |
 | **Portable audit trail** | `devx audit export` emits sessions, events, changes, DLQ entries, and usage as one JSON/JSONL stream |
+| **Drift verification** | `devx verify` checks the workspace against the change journal — every recorded change is reported `intact`, `reverted`, `conflict`, or `missing` by hash |
+| **Secret guard** | Reads are scanned for API keys, tokens, and private keys with `warn` / `redact` / `block` modes, plus a CI-friendly `devx scan-secrets` command |
+| **PR-ready reports** | `devx report <session-or-run>` renders a Markdown/JSON summary with timeline, file hashes, lint/test results, cost, and a suggested PR body |
+| **Disposable remote lab** | `devx lab up` boots a throwaway SSH container and prints ready-to-paste `--remote` / `--container` URIs for demos and onboarding |
 | **Resilience & circuit breaker** | Circuit breaker protection, rate limit detection, and exponential backoff retry for LLM calls |
 | **Dead Letter Queue (DLQ)** | Failed runs are captured in SQLite for debugging, inspection, and one-command retries |
 | **SQLite sessions** | Persistent session state, event history, and checkpoint-compatible run IDs |
@@ -105,8 +109,11 @@ For the positioning statement, target users, and the core/team feature split, se
 - **`src/devx/harness/tools.py`** — `WorkspaceTools`: read, write, replace, search, `git_diff`, and `run` (shell commands)
 - **`src/devx/harness/backend.py`** & **`ssh_backend.py`** — Pluggable `LocalWorkspaceBackend` and `SshWorkspaceBackend` for local and remote SSH/SFTP environments
 - **`src/devx/harness/container_backend.py`** — `ContainerWorkspaceBackend` running file ops and commands via `docker exec` (no bind mount)
-- **`src/devx/pricing.py`** — per-model pricing table and cost formatting for `devx usage`
+- **`src/devx/pricing.py`** — per-model pricing table, cost formatting, and Markdown usage receipts for `devx usage`
 - **`src/devx/audit.py`** — portable audit-trail collection and JSON/JSONL rendering
+- **`src/devx/secrets.py`** — lightweight secret scanner powering read-time `warn`/`redact`/`block` modes and `devx scan-secrets`
+- **`src/devx/report.py`** — PR-ready run/session reports (`devx report`)
+- **`src/devx/harness/lab.py`** — disposable remote workspaces (`devx lab`) built on the e2e SSH container image
 - **`src/devx/harness/tool_registry.py`** — built-in, workspace plugin, and MCP tool registration
 - **`src/devx/harness/mcp.py`** — bounded stdio MCP initialization, discovery, and tool calls
 - **`src/devx/harness/approval.py`** — `ApprovalManager` gates all mutations (writes, command execution)
@@ -220,6 +227,7 @@ Both `DEVX_*` and legacy `DEV_*` variable names are supported, with `DEVX_*` tak
 | `DEVX_REMOTE_SSH` | `""` | Remote workspace SSH target (`user@host:/path` or `ssh://...`) |
 | `DEVX_SSH_KEY` | `""` | Path to private SSH key for remote authentication |
 | `DEVX_CONTAINER` | `""` | Default container workspace URI (`container://name/path`) |
+| `DEVX_SECRET_SCAN` | `warn` | Secret scan on agent reads: `off`, `warn`, `redact`, or `block` |
 | `DEVX_POLICY_PRESET` | `""` | Policy preset: `remote_only`, `deny_local_writes`, `protected`, or `strict` |
 | `DEVX_SESSION_DB` | `~/.devx/sessions.db` | SQLite session database path |
 | `DEVX_CACHE_DB` | `~/.devx/cache.db` | Semantic cache database path |
@@ -404,6 +412,7 @@ Show recorded token usage and estimated cost, priced per model.
 ```bash
 devx usage
 devx usage --session my-session --json
+devx usage --run 4f2a1c --markdown      # per-run receipt
 ```
 
 ### `devx audit export`
@@ -414,6 +423,60 @@ Export a portable audit trail (sessions, events, changes, DLQ, usage).
 devx audit export --format jsonl --out audit.jsonl
 devx audit export --session my-session --format json
 ```
+
+### `devx report`
+
+Render a PR-ready summary of a session or run: the agent timeline, checked-in
+file changes with before/after hashes, lint/test results, token cost, and a
+suggested PR description.
+
+```bash
+devx report my-session                # Markdown to stdout
+devx report 4f2a1c --out report.md    # a run id, written to a file
+devx report my-session --json         # machine-readable
+```
+
+### `devx verify`
+
+Compare the workspace against the recorded change journal. Each recorded
+change is reported `intact`, `reverted`, `conflict`, or `missing` by comparing
+current file hashes; exits `1` when anything is in conflict or missing.
+
+```bash
+devx verify
+devx verify --run 4f2a1c
+devx verify --remote "deploy@bastion:/srv/app"
+devx verify --json
+```
+
+### `devx scan-secrets`
+
+Scan files for potential secrets (private keys, AWS/GitHub/OpenAI tokens,
+credential assignments). Exits `1` when anything is found, so it can gate CI.
+
+```bash
+devx scan-secrets .               # whole tree (skips .git, node_modules, ...)
+devx scan-secrets .env            # a single file
+devx scan-secrets . --json
+```
+
+By default the agent also scans every file it reads. Set
+`DEVX_SECRET_SCAN=warn|redact|block|off` (default `warn`) to control whether
+secrets are warned about, masked out of the model context, refused, or
+ignored.
+
+### `devx lab`
+
+Boot or tear down a disposable remote workspace container so you can try
+governed remote execution in about a minute — no server setup needed.
+
+```bash
+devx lab up
+devx lab down devx-lab-a1b2c3d4
+```
+
+`lab up` prints ready-to-paste `--remote` and `--container` URIs backed by the
+same container image the SSH end-to-end test suite uses.
 
 ### `devx changes`
 
