@@ -23,10 +23,20 @@ The workflow only runs automatically for `develop`, `release/*`, and
 2. Merge completed features into `develop`.
 3. Create `release/X.Y` from `develop`; the workflow sets `X.Y.0`.
 4. Validate the release candidate through CI.
-5. Merge the release branch into `main` and `develop`.
-6. Create a tag such as `vX.Y.0` on `main`.
-7. CI builds and smoke-tests the package. Publishing is intentionally not
-   configured until a package registry and publishing credentials are selected.
+5. Once the release branch is pushed, `version.yml` tags it `vX.Y.0`
+   automatically and `release.yml` builds the wheel/sdist, signs them with
+   Sigstore, and publishes to PyPI using OIDC trusted publishing.
+6. Verify the build and PyPI upload, then merge the release branch into
+   `main` and back into `develop`.
+
+Publishing is configured via PyPI **trusted publishing** (`release.yml`):
+no API token is checked in. Before the first release, register the publisher
+on PyPI (project `devx-coding-agent` → *Trusted Publishers* → *Add
+publisher*) with workflow name `release.yml`, environment `release`, and the
+GitHub owner/repository owning this code. The `publish` job requires
+`id-token: write` (present in `release.yml`) and the `changelog` job falls
+back to full-history output when no previous tag exists, so the first
+release can go out without a manual token or a hand-written changelog.
 
 For urgent fixes, create `hotfix/X.Y.Z` from `main`, validate it, merge it
 back into both `main` and `develop`, then tag the resulting `main` commit.

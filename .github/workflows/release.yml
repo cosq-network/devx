@@ -53,6 +53,9 @@ jobs:
     environment: release
     permissions:
       contents: read
+      # Mandatory for OIDC trusted publishing: without this the action cannot
+      # mint the token it uses to identify itself to PyPI.
+      id-token: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -90,7 +93,9 @@ jobs:
           fetch-depth: 0
       - name: Generate changelog
         run: |
-          git log --oneline --no-merges $(git describe --tags --abbrev=0 HEAD^)..HEAD | sed 's/^/- /' > CHANGELOG.md
+          # First release has no previous tag; fall back to the full history.
+          PREV_TAG="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)"
+          git log --oneline --no-merges ${PREV_TAG:+$PREV_TAG..}HEAD | sed 's/^/- /' > CHANGELOG.md
       - uses: actions/upload-artifact@v4
         with:
           name: changelog

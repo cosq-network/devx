@@ -46,6 +46,7 @@
 - Secret scanning now guards the write path: in `block` mode a write whose content contains a credential is refused (the file is not created), and `warn` mode attaches a warning to the write result.
 - `devx audit export --run <id>` no longer over-exposes other sessions: the export resolves the run's owner session, emits that run's events once, and filters DLQ entries and token usage to the run, so a `--run` audit contains only that run's rows.
 - Documented the remote/container sandbox boundary: escape detection is lexical on SSH/container targets (no remote `readlink`), so symlinks inside the workspace pointing outside it are a known limitation (`docs/governed-remote.md`, `docs/threat-model.md`).
+- Fixed the public-release pipeline: the `release.yml` `publish` job now declares `id-token: write` (job-level permissions previously overrode the workflow-wide OIDC permission, which would have made trusted publishing to PyPI fail with "missing or insufficient OIDC token permissions"), and the `changelog` job falls back to full-history output when no previous tag exists so the first `v*` tag release succeeds (`docs/gitflow.md` now documents the trusted-publisher setup and end-to-end release flow).
 
 ## 0.1.0
 

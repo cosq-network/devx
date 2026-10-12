@@ -738,7 +738,8 @@ pyright
 The project uses GitHub Actions for continuous integration and automated PyPI releases:
 
 - `.github/workflows/ci.yml` — Runs tests, lint, compilation, benchmarks, and security checks on every push and pull request
-- `.github/workflows/release.yml` — Automates PyPI releases on version tags
+- `.github/workflows/release.yml` — Automates PyPI releases on version tags: builds wheel/sdist, signs with Sigstore, publishes via OIDC trusted publishing, and emits an SBOM and changelog (see [docs/gitflow.md](docs/gitflow.md))
+- `.github/workflows/version.yml` — GitFlow semantic versioning on `develop`, `release/*`, and `hotfix/*` branches: commits the version bump and creates the `vX.Y.Z` tag that triggers the release
 
 ---
 
