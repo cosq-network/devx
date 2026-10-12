@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -60,12 +61,16 @@ class ActionHandlers:
             return
         self.app._write("Restored: " + ", ".join(restored) if restored else "No safe changes to restore.")
 
-    def cancel_run(self) -> None:
+    def cancel_run(self) -> str:
+        """Request cancellation of the active run; returns the chat message."""
         if self.app._cancellation:
             self.app._cancellation.cancel()
-            self.app._write("Cancellation requested.")
+            message = "Cancellation requested."
+            self.app._write(message)
         else:
-            self.app._write("No active run to cancel.")
+            message = "No active run to cancel."
+            self.app._write(message)
+        return message
 
     def clear_chat(self) -> None:
         chat = self.app.query_one("#chat-view", RichLog)
@@ -73,23 +78,63 @@ class ActionHandlers:
         self.app._transcript.clear()
         self.app._write("Chat cleared. Ready for your next task.")
 
-    def copy_transcript(self) -> None:
+    def copy_transcript(self) -> str:
         from devx.tui.components.modals import copy_to_clipboard
         # RichLog doesn't have selected_text, use transcript
         content = "\n".join(self.app._transcript)
         try:
-            copy_to_clipboard(content)
+            label = copy_to_clipboard(content, app=self.app)
         except RuntimeError as exc:
-            self.app.query_one("#status-text", Static).update(f"● copy failed: {exc}")
+            message = f"● copy failed: {exc}"
         else:
-            self.app.query_one("#status-text", Static).update("● copied transcript to clipboard")
+            label = label or ""
+            suffix = f" ({label})" if label else ""
+            message = f"● copied transcript to clipboard{suffix}"
+        self.app.query_one("#status-text", Static).update(message)
+        return message
 
     def copy_or_cancel(self) -> None:
-        # RichLog doesn't have selected_text, use transcript
-        if self.app._transcript:
-            self.copy_transcript()
+        """Handle Ctrl+C: cancel the active run, otherwise copy the transcript.
+
+        A second Ctrl+C within ``DOUBLE_CTRL_C_WINDOW`` (default 1.5 s) quits
+        the app entirely, so pressing Ctrl+C twice always lets the user exit.
+        """
+        now = time.monotonic()
+        app = self.app
+        window = float(getattr(app, "DOUBLE_CTRL_C_WINDOW", 1.5))
+        if getattr(app, "_ctrl_c_armed", False) and (now - getattr(app, "_ctrl_c_at", 0.0)) <= window:
+            app._ctrl_c_armed = False
+            app.action_quit()
+            return
+        app._ctrl_c_at = now
+        app._ctrl_c_armed = True
+        if getattr(app, "_run_active", False):
+            message = self.cancel_run()
         else:
-            self.cancel_run()
+            message = self.copy_transcript()
+        self._set_status(f"{message} — press Ctrl+C again to quit")
+        self._schedule_disarm(window)
+
+    def _set_status(self, message: str) -> None:
+        try:
+            self.app.query_one("#status-text", Static).update(message)
+        except Exception:
+            pass
+
+    def _schedule_disarm(self, window: float) -> None:
+        """Disarm the double-press window once it expires (real apps only)."""
+        try:
+            set_timer = getattr(self.app, "set_timer", None)
+            if callable(set_timer):
+                set_timer(window, self._disarm_ctrl_c)
+        except Exception:
+            pass
+
+    def _disarm_ctrl_c(self) -> None:
+        try:
+            self.app._ctrl_c_armed = False
+        except Exception:
+            pass
 
     def open_setup(self) -> None:
         from devx.config import Settings

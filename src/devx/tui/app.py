@@ -67,6 +67,8 @@ class DevTUI(App):
         ("f2", "copy_transcript", "Copy"),
         ("ctrl+c", "copy_or_cancel", "Copy/Cancel"),
     ]
+    # Seconds between two Ctrl+C presses that trigger an app quit.
+    DOUBLE_CTRL_C_WINDOW: ClassVar[float] = 1.5
     CSS = """
     $primary: #303030;
     $secondary: #4a4a4a;
@@ -236,6 +238,9 @@ class DevTUI(App):
         self._requested_agent = "supervisor"
         self._transcript: list[str] = []
         self._run_active = False
+        # Double-press Ctrl+C-to-quit state (see DOUBLE_CTRL_C_WINDOW).
+        self._ctrl_c_armed = False
+        self._ctrl_c_at = 0.0
 
         # Initialize component managers
         self.help = HelpSystem(self)

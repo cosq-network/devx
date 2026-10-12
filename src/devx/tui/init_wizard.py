@@ -1,16 +1,17 @@
 """Full-screen setup wizard for the interactive ``devx init`` path.
 
 Plain ``devx init`` (no flags, interactive terminal) launches this wizard so
-provider/model/API-key selection and test/lint configuration happen on one
-centered screen instead of a sequence of line prompts. The wizard shares the
-write path with the CLI via :func:`devx.configuration.apply_init`, so both
-produce identical ``.devx/config.json`` and ``.env`` files.
+provider/model/API-key selection happens on one centered screen instead of a
+sequence of line prompts. The wizard shares the write path with the CLI via
+:func:`devx.configuration.apply_init`, so both produce identical
+``.devx/config.json`` and ``.env`` files.
 """
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:
     from textual.app import App, ComposeResult
@@ -116,7 +117,10 @@ class InitWizard(App):
     """Centered, full-screen configuration wizard for ``devx init``."""
 
     TITLE = "devx • init"
-    SUB_TITLE = "configure provider, model, and project commands"
+    SUB_TITLE = "configure provider and model"
+    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [("ctrl+c", "copy_or_quit", "Quit")]
+    # Seconds between two Ctrl+C presses that quit the wizard.
+    DOUBLE_CTRL_C_WINDOW: ClassVar[float] = 1.5
     CSS = """
     $primary: #303030;
     $accent: #bdbdbd;
@@ -176,6 +180,9 @@ class InitWizard(App):
         self._settings = settings
         self.cancelled = False
         self.result: dict[str, Any] | None = None
+        # Double-press Ctrl+C-to-quit state (see DOUBLE_CTRL_C_WINDOW).
+        self._ctrl_c_armed = False
+        self._ctrl_c_at = 0.0
 
     def compose(self) -> ComposeResult:
         from devx.configuration import PROVIDERS, catalog_models
@@ -235,6 +242,20 @@ class InitWizard(App):
         if event.key == "escape":
             event.stop()
             self._cancel()
+
+    def action_copy_or_quit(self) -> None:
+        """Ctrl+C twice (within ``DOUBLE_CTRL_C_WINDOW``) quits the wizard."""
+        now = time.monotonic()
+        if self._ctrl_c_armed and (now - self._ctrl_c_at) <= self.DOUBLE_CTRL_C_WINDOW:
+            self._ctrl_c_armed = False
+            self.exit()
+            return
+        self._ctrl_c_at = now
+        self._ctrl_c_armed = True
+        try:
+            self.query_one("#wizard-error", Label).update("Press Ctrl+C again to quit")
+        except Exception:
+            pass
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id != "wizard-provider":

@@ -227,6 +227,27 @@ class TestInitWizardUi:
         assert wizard.result is None
         assert not (tmp_path / ".env").exists()
 
+    def test_ctrl_c_twice_quits_wizard(self, tmp_path: Path):
+        import asyncio
+
+        from devx.tui.init_wizard import InitWizard
+
+        async def drive():
+            wizard = InitWizard(workspace=tmp_path)
+            async with wizard.run_test() as pilot:
+                # First Ctrl+C arms the double-press quit and shows a hint.
+                await pilot.press("ctrl+c")
+                assert wizard._ctrl_c_armed is True
+                # Second Ctrl+C within the window quits the wizard.
+                await pilot.press("ctrl+c")
+                assert wizard._exit is True
+            return wizard
+
+        wizard = asyncio.run(drive())
+        assert wizard._exit is True
+        assert not wizard.cancelled
+        assert not (tmp_path / ".env").exists()
+
 
 # ── CLI dispatch ───────────────────────────────────────────────────────────
 

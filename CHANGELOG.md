@@ -3,6 +3,8 @@
 ## Unreleased (0.2.0-dev.0)
 
 - Added a full-screen TUI setup wizard for `devx init`: plain `devx init` (no flags, interactive terminal) now opens a centered Textual dialog to pick provider/model, enter the API key, and toggle embeddings. Flag-based and `--non-interactive` invocations keep the prompt flow unchanged.
+- TUI: pressing `Ctrl+C` twice within 1.5 s now quits the app (both `devx tui` and the `devx init` wizard); a single `Ctrl+C` cancels the active run or copies the transcript when idle (previously it could copy mid-run instead of cancelling).
+- TUI: transcript copies now use the operating system's default clipboard (`clip` / `pbcopy` / `wl-copy` / `xclip` / `xsel`), falling back to the terminal's OSC 52 clipboard inside the TUI and then stdlib tkinter; the status bar reports which mechanism was used (`devx.util.clipboard`).
 - Added `devx.configuration.apply_init()` as the single write path shared by the CLI `devx init` command and the TUI wizard, so both produce identical `.devx/config.json` and `.env` files (and merge existing project config).
 - Removed test/lint command configuration from `devx init`: the `--test-cmd`/`--lint-cmd` flags, prompts, and wizard fields are gone. Existing `test_command`/`lint_command` entries in `.devx/config.json` are preserved (init merges rather than clobbers), and remain configurable via project config or `DEVX_TEST_COMMAND`/`DEVX_LINT_COMMAND`.
 - Fixed `devx init` crashing on Windows: `UserConfig`/`PROVIDERS`/`catalog_models` are now imported from `devx.configuration` (they are not part of `devx.config`'s `Settings` module).

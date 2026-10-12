@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import platform
-import shutil
-import subprocess
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
@@ -51,24 +48,18 @@ if TYPE_CHECKING:
     from devx.harness.approval import ApprovalDecision, ApprovalRequest
 
 
-def copy_to_clipboard(text: str) -> None:
-    """Copy text using a native clipboard command on the current platform."""
-    if not text:
-        raise RuntimeError("The transcript is empty.")
-    system = platform.system()
-    commands = {
-        "Windows": [["clip.exe"], ["clip"]],
-        "Darwin": [["pbcopy"]],
-        "Linux": [["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]],
-    }.get(system, [])
-    for command in commands:
-        if shutil.which(command[0]):
-            try:
-                subprocess.run(command, input=text, text=True, check=True, timeout=5)
-                return
-            except (OSError, subprocess.SubprocessError) as exc:
-                raise RuntimeError(f"Unable to copy transcript with {command[0]}: {exc}") from exc
-    raise RuntimeError("No clipboard utility found. Install wl-copy, xclip, or xsel.")
+def copy_to_clipboard(text: str, *, app=None) -> str:
+    """Copy *text* using the OS-default clipboard mechanism and return a label.
+
+    Delegates to :func:`devx.util.clipboard.copy_to_clipboard`, which layers the
+    platform-native utility (``clip`` / ``pbcopy`` / ``wl-copy`` / ``xclip`` /
+    ``xsel``), then the Textual OSC 52 terminal clipboard when *app* is a live
+    Textual app, then stdlib tkinter. Raises :class:`RuntimeError` for empty
+    *text* or when no mechanism is reachable.
+    """
+    from devx.util.clipboard import copy_to_clipboard as _copy
+
+    return _copy(text, app=app)
 
 
 def model_options(models) -> list[tuple[str, str]]:

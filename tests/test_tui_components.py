@@ -45,6 +45,8 @@ class FakeRunner:
 
 
 class FakeApp:
+    DOUBLE_CTRL_C_WINDOW = 1.5
+
     def __init__(self):
         self._written: list[str] = []
         self._log_lines: list[str] = []
@@ -62,6 +64,11 @@ class FakeApp:
         self._workers: list = []
         self._running = None
         self.runner = FakeRunner()
+        # Double-press Ctrl+C-to-quit state (see DOUBLE_CTRL_C_WINDOW).
+        self._ctrl_c_armed = False
+        self._ctrl_c_at = 0.0
+        self.quit_calls = 0
+        self.timers = []
 
     def _write(self, text):
         self._written.append(text)
@@ -89,6 +96,13 @@ class FakeApp:
 
     def _set_running(self, value):
         self._running = value
+
+    def action_quit(self):
+        self.quit_calls += 1
+        self._written.append("quit")
+
+    def set_timer(self, delay, callback):
+        self.timers.append((delay, callback))
 
 
 class FakeCancellation:
@@ -616,7 +630,7 @@ class TestActionHandlers:
 
     def test_copy_transcript_success(self, fake_app, monkeypatch):
         monkeypatch.setattr(
-            "devx.tui.components.modals.copy_to_clipboard", lambda text: None
+            "devx.tui.components.modals.copy_to_clipboard", lambda text, app=None: None
         )
         fake_app._transcript = ["line1"]
         from devx.tui.components.actions import ActionHandlers
@@ -630,21 +644,88 @@ class TestActionHandlers:
         ActionHandlers(fake_app).copy_transcript()
         assert "copy failed" in fake_app.query_one("#status-text")._value
 
-    def test_copy_or_cancel_copies_when_transcript(self, fake_app, monkeypatch):
+    def test_copy_or_cancel_copies_when_idle(self, fake_app, monkeypatch):
         monkeypatch.setattr(
-            "devx.tui.components.modals.copy_to_clipboard", lambda text: None
+            "devx.tui.components.modals.copy_to_clipboard", lambda text, app=None: None
         )
         fake_app._transcript = ["x"]
         from devx.tui.components.actions import ActionHandlers
 
         ActionHandlers(fake_app).copy_or_cancel()
-        assert fake_app.query_one("#status-text")._value == "● copied transcript to clipboard"
+        assert "● copied transcript to clipboard" in fake_app.query_one("#status-text")._value
+        assert fake_app._ctrl_c_armed is True
+        assert fake_app._ctrl_c_at > 0.0
 
-    def test_copy_or_cancel_cancels_when_empty(self, fake_app):
+    def test_copy_or_cancel_empty_transcript_shows_copy_failure(self, fake_app):
         from devx.tui.components.actions import ActionHandlers
 
         ActionHandlers(fake_app).copy_or_cancel()
-        assert fake_app._written[-1] == "No active run to cancel."
+        assert "copy failed" in fake_app.query_one("#status-text")._value
+        assert fake_app._ctrl_c_armed is True
+
+    def test_copy_or_cancel_cancels_active_run(self, fake_app):
+        cancellation = FakeCancellation()
+        fake_app._run_active = True
+        fake_app._cancellation = cancellation
+        from devx.tui.components.actions import ActionHandlers
+
+        ActionHandlers(fake_app).copy_or_cancel()
+        assert cancellation.cancel_calls == 1
+        assert fake_app._written[-1] == "Cancellation requested."
+        assert fake_app._ctrl_c_armed is True
+
+    def test_copy_or_cancel_second_press_quits_within_window(self, fake_app, monkeypatch):
+        steps = iter([100.0, 100.6])
+        monkeypatch.setattr(
+            "devx.tui.components.actions.time.monotonic", lambda: next(steps)
+        )
+        fake_app._transcript = ["x"]
+        monkeypatch.setattr(
+            "devx.tui.components.modals.copy_to_clipboard", lambda text, app=None: None
+        )
+        from devx.tui.components.actions import ActionHandlers
+
+        handlers = ActionHandlers(fake_app)
+        handlers.copy_or_cancel()
+        assert fake_app._ctrl_c_armed is True
+        handlers.copy_or_cancel()
+        assert fake_app.quit_calls == 1
+        assert fake_app._ctrl_c_armed is False
+
+    def test_copy_or_cancel_second_press_outside_window_rearms(self, fake_app, monkeypatch):
+        steps = iter([100.0, 103.0, 103.2])
+        monkeypatch.setattr(
+            "devx.tui.components.actions.time.monotonic", lambda: next(steps)
+        )
+        fake_app._transcript = ["x"]
+        monkeypatch.setattr(
+            "devx.tui.components.modals.copy_to_clipboard", lambda text, app=None: None
+        )
+        from devx.tui.components.actions import ActionHandlers
+
+        handlers = ActionHandlers(fake_app)
+        handlers.copy_or_cancel()
+        handlers.copy_or_cancel()  # outside the 1.5 s window: no quit, re-arm
+        assert fake_app.quit_calls == 0
+        assert fake_app._ctrl_c_armed is True
+        assert fake_app._ctrl_c_at == 103.0
+        handlers.copy_or_cancel()  # a fast press after re-arming quits
+        assert fake_app.quit_calls == 1
+
+    def test_copy_or_cancel_schedules_disarm(self, fake_app, monkeypatch):
+        fake_app._transcript = ["x"]
+        monkeypatch.setattr(
+            "devx.tui.components.modals.copy_to_clipboard", lambda text, app=None: None
+        )
+        from devx.tui.components.actions import ActionHandlers
+
+        handlers = ActionHandlers(fake_app)
+        handlers.copy_or_cancel()
+        assert len(fake_app.timers) == 1
+        delay, callback = fake_app.timers[0]
+        assert delay == fake_app.DOUBLE_CTRL_C_WINDOW
+        callback()
+        assert fake_app._ctrl_c_armed is False
 
     def test_set_agent_valid(self, fake_app):
         from devx.tui.components.actions import ActionHandlers
@@ -927,7 +1008,7 @@ class TestActionHandlers:
         assert fake_app.query_one("#status-text")._value == "● ready"
 
 
-# ── copy_to_clipboard (modals) ───────────────────────────────────────────
+# ── copy_to_clipboard (OS-default clipboard) ─────────────────────────────
 
 class TestCopyToClipboard:
     def test_empty_transcript_raises(self):
@@ -937,8 +1018,9 @@ class TestCopyToClipboard:
             copy_to_clipboard("")
 
     def test_no_utility_found_raises(self, monkeypatch):
-        monkeypatch.setattr("devx.tui.components.modals.platform.system", lambda: "Linux")
-        monkeypatch.setattr("devx.tui.components.modals.shutil.which", lambda name: None)
+        monkeypatch.setattr("devx.util.clipboard.platform.system", lambda: "Linux")
+        monkeypatch.setattr("devx.util.clipboard.shutil.which", lambda name: None)
+        monkeypatch.setattr("devx.util.clipboard.tk_clipboard_copy", lambda text: False)
         from devx.tui.components.modals import copy_to_clipboard
 
         with pytest.raises(RuntimeError, match="No clipboard utility found"):
@@ -946,19 +1028,20 @@ class TestCopyToClipboard:
 
     def test_windows_uses_clip(self, monkeypatch):
         calls = []
-        monkeypatch.setattr("devx.tui.components.modals.platform.system", lambda: "Windows")
+        monkeypatch.setattr("devx.util.clipboard.platform.system", lambda: "Windows")
         monkeypatch.setattr(
-            "devx.tui.components.modals.shutil.which",
+            "devx.util.clipboard.shutil.which",
             lambda name: "clip.exe" if name == "clip.exe" else None,
         )
 
         def fake_run(command, **kwargs):
             calls.append((command, kwargs))
 
-        monkeypatch.setattr("devx.tui.components.modals.subprocess.run", fake_run)
+        monkeypatch.setattr("devx.util.clipboard.subprocess.run", fake_run)
         from devx.tui.components.modals import copy_to_clipboard
 
-        copy_to_clipboard("hello")
+        label = copy_to_clipboard("hello")
+        assert label == "OS clipboard"
         assert len(calls) == 1
         command, kwargs = calls[0]
         assert command == ["clip.exe"]
@@ -968,35 +1051,65 @@ class TestCopyToClipboard:
 
     def test_darwin_uses_pbcopy(self, monkeypatch):
         calls = []
-        monkeypatch.setattr("devx.tui.components.modals.platform.system", lambda: "Darwin")
+        monkeypatch.setattr("devx.util.clipboard.platform.system", lambda: "Darwin")
         monkeypatch.setattr(
-            "devx.tui.components.modals.shutil.which",
+            "devx.util.clipboard.shutil.which",
             lambda name: "pbcopy" if name == "pbcopy" else None,
         )
 
         def fake_run(command, **kwargs):
             calls.append(command)
 
-        monkeypatch.setattr("devx.tui.components.modals.subprocess.run", fake_run)
+        monkeypatch.setattr("devx.util.clipboard.subprocess.run", fake_run)
         from devx.tui.components.modals import copy_to_clipboard
 
-        copy_to_clipboard("hello")
+        assert copy_to_clipboard("hello") == "OS clipboard"
         assert calls == [["pbcopy"]]
 
-    def test_run_failure_raises_runtime_error(self, monkeypatch):
-        monkeypatch.setattr("devx.tui.components.modals.platform.system", lambda: "Windows")
+    def test_uses_osc52_fallback_when_app_present(self, monkeypatch):
+        monkeypatch.setattr("devx.util.clipboard.platform.system", lambda: "Linux")
+        monkeypatch.setattr("devx.util.clipboard.shutil.which", lambda name: None)
+        monkeypatch.setattr("devx.util.clipboard.tk_clipboard_copy", lambda text: False)
+        copied = []
+
+        class FakeClippyApp:
+            def copy_to_clipboard(self, text):
+                copied.append(text)
+
+        from devx.tui.components.modals import copy_to_clipboard
+
+        label = copy_to_clipboard("hello", app=FakeClippyApp())
+        assert label == "terminal clipboard (OSC 52)"
+        assert copied == ["hello"]
+
+    def test_tkinter_fallback(self, monkeypatch):
+        monkeypatch.setattr("devx.util.clipboard.platform.system", lambda: "Linux")
+        monkeypatch.setattr("devx.util.clipboard.shutil.which", lambda name: None)
+        monkeypatch.setattr("devx.util.clipboard.tk_clipboard_copy", lambda text: True)
+        from devx.tui.components.modals import copy_to_clipboard
+
+        assert copy_to_clipboard("hello") == "OS clipboard (Tk)"
+
+    def test_osc52_encode_golden(self):
+        from devx.util.clipboard import osc52_encode
+
+        assert osc52_encode("hello") == "\x1b]52;c;aGVsbG8=\a"
+
+    def test_run_failure_falls_through_to_raise(self, monkeypatch):
+        monkeypatch.setattr("devx.util.clipboard.platform.system", lambda: "Windows")
         monkeypatch.setattr(
-            "devx.tui.components.modals.shutil.which",
+            "devx.util.clipboard.shutil.which",
             lambda name: "clip.exe" if name == "clip.exe" else None,
         )
 
         def failing(command, **kwargs):
             raise OSError("pipe broken")
 
-        monkeypatch.setattr("devx.tui.components.modals.subprocess.run", failing)
+        monkeypatch.setattr("devx.util.clipboard.subprocess.run", failing)
+        monkeypatch.setattr("devx.util.clipboard.tk_clipboard_copy", lambda text: False)
         from devx.tui.components.modals import copy_to_clipboard
 
-        with pytest.raises(RuntimeError, match="Unable to copy transcript with clip.exe"):
+        with pytest.raises(RuntimeError, match="No clipboard utility found"):
             copy_to_clipboard("hello")
 
 

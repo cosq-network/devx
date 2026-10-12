@@ -535,10 +535,18 @@ devx tui --session feature-auth
 ### Keyboard Shortcuts
 
 - `F1` — Open Help panel
-- `Ctrl+C` — Copy active selection or cancel a running task
+- `Ctrl+C` — Cancel the active run (or copy the transcript when idle)
+- `Ctrl+C` twice — Quit the TUI
 - `Ctrl+L` — Clear transcript
-- `F2` or `Ctrl+Insert` — Copy transcript to system clipboard
+- `F2` or `Ctrl+Insert` — Copy transcript to the OS clipboard
+- `Ctrl+Q` — Quit the TUI
 - `Right Arrow` — Accept autocomplete suggestion for `@` mentions or `/` commands
+
+> **Clipboard:** transcript copies use the operating system's default clipboard
+> (`clip` on Windows, `pbcopy` on macOS, `wl-copy`/`xclip`/`xsel` on Linux). On
+> terminals without a clip tool (e.g. minimal Linux or over SSH), devx falls
+> back to the terminal's OSC 52 clipboard, then to tkinter. The status bar shows
+> which mechanism was used.
 
 ---
 

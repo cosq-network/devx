@@ -597,7 +597,7 @@ Launch the TUI with `devx tui`.
 - **Approval previews** — Bounded proposed diffs are shown before file mutations
 - **Session management** — Resume, create, and delete sessions from the sidebar
 - **Diff and recovery** — Inspect the current Git diff with `/diff` and undo the last run with `/undo`
-- **Cancellation** — Stop an active run with `/cancel`
+- **Cancellation** — Stop an active run with `/cancel` or `Ctrl+C`; press `Ctrl+C` twice to quit the TUI
 
 ---
 
