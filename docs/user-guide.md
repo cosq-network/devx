@@ -36,8 +36,9 @@ Traditional AI coding assistants either force you to copy-paste code snippets fr
 
 - **You drive intent**: "Refactor the authentication middleware to use JWT bearer tokens."
 - **Agent plans first**: It reads files, designs a concrete plan, and presents it to you.
-- **You stay in control**: Every file modification and shell command requires explicit confirmation (unless explicitly run with `--approve-all` in sandboxed environments).
-- **Zero accidental damage**: Atomic writes, before/after checksums, automatic backups in SQLite, and one-command rollback (`/undo`).
+- **You stay in control**: Every file modification and shell command requires explicit confirmation (unless explicitly run with `--approve-all` in sandboxed environments), and every file **read** is scanned for secrets (`DEVX_SECRET_SCAN=warn` by default).
+- **Zero accidental damage**: Atomic writes, before/after checksums, and a portable change journal in SQLite — reversible file-by-file with `devx changes reject`, globally with `/undo`, and auditable for drift with `devx verify`.
+- **Run where the code lives**: The same approvals, journal, and audit trail apply on your local machine, over SSH (`--remote`), or inside a container (`--container`) — your model and keys never leave your side.
 - **No auto-commits**: `devx` never commits to Git automatically. You inspect diffs and commit when satisfied.
 
 ### Quick Comparison
@@ -140,6 +141,13 @@ devx health
 
 You should see all checks marked healthy (`✓`) for configuration, session database, and optional packages.
 
+> Working against a remote server or container instead? Preflight it before you
+> trust it — same command, with a target URI:
+>
+> ```bash
+> devx doctor --remote deploy@host:/srv/app
+> ```
+
 ### Step 4: Your First Task
 
 Run a quick inspection:
@@ -156,7 +164,7 @@ devx tui
 
 ## 3. Core Mental Model
 
-Understanding `devx` comes down to four concepts:
+Understanding `devx` comes down to five concepts:
 
 ### 1. The Supervisor State Machine
 
@@ -204,6 +212,8 @@ Whenever the agent wants to touch your filesystem or execute a shell command, ex
 
 You decide whether to proceed (`y`) or decline (`n`). By default, all file writes and shell commands require approval (`DEVX_APPROVAL_REQUIRED=true` by default). You can use `--approve-all` only in trusted, isolated workspaces.
 
+File **reads** are guarded too: every file the agent opens is scanned for API keys, tokens, and private keys. With `DEVX_SECRET_SCAN=warn` (the default) you get a warning; `redact` masks matches before they reach the model, and `block` refuses the read entirely.
+
 ### 3. Persistent SQLite Sessions
 
 Every session is identified by an ID and saved in `~/.devx/sessions.db`.
@@ -220,6 +230,16 @@ devx ask "add a retry decorator to @src/api/client.py based on @src/utils/retry.
 ```
 
 In the TUI, typing `@` opens fuzzy completion for paths within the workspace.
+
+### 5. Workspace Backends: Local, SSH, and Container
+
+`devx` runs the same agent against three kinds of workspace:
+
+- **Local** (default): the current directory (override with `DEVX_WORKSPACE`).
+- **SSH**: `--remote user@host:/path` — the agent reads and edits files on the remote host over SFTP, and commands run in a remote shell with process-group cancellation (no orphaned background jobs).
+- **Container**: `--container container://<name>/path` — operations run via `docker exec` against an already-running container; no bind mount is required.
+
+Governance does not change when the workspace moves off-machine: the same approval prompts, the same hash-guarded change journal, the same `devx verify` drift checks, and the same `devx audit export` trail. See [Governed remote execution](governed-remote.md) for the full guarantees.
 
 ---
 
@@ -306,6 +326,9 @@ devx ask "run test suite and fix failing tests" --remote dev-box:/srv/app
 # Preview remote changes in plan-only mode
 devx ask --plan-only "architect payment webhook" --remote dev-box:/srv/app
 
+# Work inside a running container (docker exec; no bind mount required)
+devx ask "patch @app.py and run pytest" --container container://devx-lab-a1b2c3d4/config/repo
+
 # Structured JSON output for CI or scripting
 devx ask --json "list all public API functions in @src/app.py"
 ```
@@ -370,6 +393,102 @@ devx health --json
 devx metrics --format prometheus
 devx metrics --format json
 ```
+
+### `devx doctor`
+
+Local setup check, or — with `--remote` — a full preflight of an SSH workspace before you run anything against it:
+
+```bash
+# Local: provider config, optional packages, session DB
+devx doctor
+devx doctor --json
+
+# Remote preflight: connection, auth, path, writability, git, virtualenv
+devx doctor --remote deploy@host:/srv/app --ssh-key ~/.ssh/id_ed25519
+```
+
+The remote preflight exits non-zero if anything is broken — cheap insurance before a long run.
+
+### `devx usage`
+
+Token spend and estimated USD cost, aggregating per session/run or across everything, using a per-model pricing table:
+
+```bash
+devx usage                          # all recorded usage
+devx usage --session my-session --json
+devx usage --run 4f2a1c --markdown  # single-run cost receipt
+```
+
+Models without a known price are reported as *unpriced* rather than estimated.
+
+### `devx audit`
+
+Export a portable audit trail — sessions, agent events, journal changes, the dead-letter queue, and token usage — in one stream:
+
+```bash
+devx audit export --format jsonl --out audit.jsonl
+devx audit export --session my-session --format json
+```
+
+### `devx changes`
+
+Review the hash-guarded change journal and keep or revert each file individually:
+
+```bash
+devx changes list                     # most recent run's changes
+devx changes list --run 4f2a1c        # a specific run
+devx changes accept src/parser.py     # keep (defaults to the most recent run)
+devx changes reject src/legacy.py --run 4f2a1c   # hash-guarded revert
+```
+
+`reject` restores the exact pre-run bytes on the same backend the run used (`--remote` / `--container`) and refuses to clobber a file that changed since the run.
+
+### `devx verify`
+
+Check the workspace against the journal — every change is `intact`, `reverted`, `conflict`, or `missing`:
+
+```bash
+devx verify                          # whole journal
+devx verify --run 4f2a1c             # one run
+devx verify --remote dev-box:/srv/app  # verify the remote workspace
+devx verify --json
+```
+
+Exits `1` if any change is in conflict or missing — hook it into your CI after an agent run.
+
+### `devx scan-secrets`
+
+Sweep files or whole trees for API keys, tokens, and private-key blocks:
+
+```bash
+devx scan-secrets                    # whole workspace
+devx scan-secrets src/               # a specific path (file or directory)
+devx scan-secrets --json             # machine-readable hits
+```
+
+Exits `1` if anything is found, so it can gate CI or a pre-commit stage.
+
+### `devx report`
+
+Render a single PR-ready summary of a session or run — agent event timeline, journal changes, lint/test results, and token cost:
+
+```bash
+devx report my-session                # Markdown to stdout
+devx report 4f2a1c --out pr-body.md   # write a PR description
+devx report my-session --json
+```
+
+### `devx lab`
+
+Spin up a disposable, throwaway remote workspace container for demos, onboarding, or scratch work:
+
+```bash
+devx lab up    # prints ready-to-paste --remote / --container URIs
+devx lab down <container-name>   # tear it down
+```
+
+> Prefer a declarative setup? The `docker-compose.yml` at the repo root boots the
+> identical workspace (`docker compose up -d`).
 
 ---
 
@@ -468,7 +587,58 @@ Switched to remote SSH workspace: dev-server:/srv/app
 
 - **Client-Side Safety**: All diffs, approvals, and destructive command blockers continue to run locally before touching the remote network.
 - **Remote Testing**: Runs remote test suites directly on the remote server with automatic `.venv` activation.
-- **Rollback Safety**: Full `/undo` support to revert remote edits back to their exact pre-run state.
+- **Rollback Safety**: Full `/undo` support plus file-by-file `devx changes reject` to revert remote edits exactly, and `devx verify` to detect drift afterwards.
+- **Governed by default**: Layer a policy preset on top for hard constraints — `DEVX_POLICY_PRESET=strict devx ask "..." --remote <uri>` allows execution only on the remote and refuses local writes.
+
+The identical workflow runs inside a container: `devx ask "..." --container container://<name>/path` (see `devx lab` below for a throwaway one).
+
+### 5. Change Review & Drift Verification
+
+Every approved edit lands in a SQLite change journal with before/after hashes — a lightweight "review the agent's work" loop you can run even after the session is over:
+
+```bash
+devx changes list                 # what did the agent touch?
+devx verify                       # does the workspace still match the journal?
+devx changes reject src/legacy.py # drop one file, hash-guarded
+```
+
+`devx verify` reports each change as `intact` (untouched), `reverted` (already undone), `conflict` (the file changed since the run), or `missing` (deleted). It exits `1` on conflict/missing, so it slots into CI after an agent run.
+
+### 6. Secret Hygiene (`devx scan-secrets`)
+
+Sweep before committing or opening a PR:
+
+```bash
+devx scan-secrets src/
+```
+
+Each hit shows `file:line  kind  snippet`, and the command exits `1` on any hit — wire it into CI or a pre-commit hook. The same scanner runs on every agent file *read* when `DEVX_SECRET_SCAN` is `warn`/`redact`/`block`. Placeholder and test keys legitimately trip it, so scope sweeps to real code or treat the tripwire as a deliberate gate.
+
+### 7. PR-Ready Reports & Cost Receipts
+
+Turn a finished session into a PR description and a spend summary:
+
+```bash
+devx report my-session --out pr-body.md   # timeline + changes + tests + cost
+devx usage --run 4f2a1c --markdown        # one-run cost receipt
+```
+
+`devx report` accepts a session id/name *or* a run id and combines the agent event timeline, journal changes, lint/test results, and token cost into one document. `devx usage --run --markdown` renders an itemized cost receipt for a single run.
+
+### 8. Disposable Remote Workspace (`devx lab`)
+
+Try governed remote execution with zero infrastructure:
+
+```bash
+devx lab up
+# Started disposable remote workspace devx-lab-a1b2c3d4
+#   remote:    devx ask --remote ssh://devx@127.0.0.1:49153/config/repo --approve-all 'your task here'
+#   container: devx ask --container container://devx-lab-a1b2c3d4/config/repo --approve-all 'your task here'
+#   doctor:    devx doctor --remote ssh://devx@127.0.0.1:49153/config/repo
+#   stop:      devx lab down devx-lab-a1b2c3d4
+```
+
+The lab container binds to `127.0.0.1` with a random host port — never exposed to the network. The repo's `docker-compose.yml` (`docker compose up -d`) boots the identical workspace declaratively.
 
 ---
 
@@ -505,6 +675,15 @@ DEVX_DECOUPLED_CONTEXT_ENABLED=true         # Decouple planner/coder contexts to
 # Remote SSH Workspace
 DEVX_REMOTE_SSH=ssh://ubuntu@host/srv/app   # Remote workspace URI or ~/.ssh/config host alias
 DEVX_SSH_KEY=~/.ssh/id_ed25519              # Optional private key path override
+
+# Container Workspace
+DEVX_CONTAINER=container://devx-lab-a1b2c3d4/config/repo  # Default container URI (or "container" in .devx/config.json)
+
+# Governance & Trust
+DEVX_SECRET_SCAN=warn       # off | warn | redact | block — scan agent file reads for secrets
+DEVX_POLICY_PRESET=default  # default | remote_only | deny_local_writes | protected | strict
+DEVX_SESSION_DB=~/.devx/sessions.db   # SQLite session + change-journal database
+DEVX_CACHE_DB=~/.devx/cache.db        # Semantic cache database
 ```
 
 ### Project Rules (`.devx/config.json`)
@@ -528,6 +707,29 @@ Define granular permissions for commands and file access:
 }
 ```
 
+### Policy Presets
+
+Presets bundle hard constraints for governed runs — especially remote/container ones. Select with `DEVX_POLICY_PRESET` or `"policy_preset"` in `.devx/config.json`:
+
+| Preset | Effect |
+|---|---|
+| `default` | Prompt for edits and shell commands on the selected workspace |
+| `remote_only` | Refuse to execute shell commands on the local machine |
+| `deny_local_writes` | Refuse to modify the local filesystem |
+| `protected` | Always require approval for writes to sensitive files (`.env*`, keys, secrets) |
+| `strict` | Remote execution only, no local writes (recommended for governed remote runs) |
+
+```bash
+DEVX_POLICY_PRESET=strict devx ask "refactor the parser" --remote deploy@prod:/srv/app
+```
+
+Presets are enforced regardless of other approval settings: a local write under `deny_local_writes`, or a local command under `remote_only`, is refused before the tool runs.
+
+### Ready-Made Templates
+
+- **`.env.example`** (repo root) lists every supported variable — copy it to `.env` and fill in `DEVX_API_KEY`.
+- **`docker-compose.yml`** (repo root) boots the `devx lab` workspace declaratively: `docker compose up -d`.
+
 ---
 
 ## 9. Troubleshooting and Recovery
@@ -540,6 +742,8 @@ If a provider or command fails:
 devx doctor
 devx health
 ```
+
+For a remote/container workspace, preflight the target the same way — `devx doctor --remote <uri>` checks connection, auth, path, writability, git, and virtualenv before you start.
 
 `devx health` checks:
 - Session database read/write integrity
@@ -574,3 +778,17 @@ For deep troubleshooting, pass `--json-logs` to output machine-readable structur
 ```bash
 devx ask --json-logs "debug my task"
 ```
+
+### 5. Workspace Drift (`devx verify`)
+
+`devx verify` compares current file hashes with the journal. `conflict` or `missing` means something else touched the file since the run — do **not** force a revert; resolve the drift by hand, then re-run `devx verify` until clean. `reverted` is expected after an intentional `devx changes reject` or `/undo`.
+
+### 6. Secret Scan Tripwires (`devx scan-secrets`)
+
+The scanner exits `1` — and `devx` warns on reads — whenever a value looks like a key, including placeholders (`sk-replace-me`), `.env.example` files, and test fixtures with fake credentials. Conservative by design. Scope the scan to real code (`devx scan-secrets src/`) or keep it as a deliberate CI gate.
+
+### 7. Remote & Container Failures
+
+- **Preflight first**: `devx doctor --remote <uri>` isolates connection, auth, path, or git problems before a long run.
+- **Dropped connections**: the SSH backend transparently re-establishes the transport with backoff (three attempts); a hard failure invalidates the session rather than silently targeting a different host.
+- **`devx lab` won't start**: it needs a working Docker daemon — check `docker info` first. The container binds `127.0.0.1` with a random port, so no firewall changes are needed.
