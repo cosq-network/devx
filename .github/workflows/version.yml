@@ -71,9 +71,18 @@ jobs:
       - name: Create release tag
         run: |
           VERSION="${{ needs.version.outputs.version }}"
+          # The version job commits the bump and pushes it after this run
+          # started, so re-fetch the branch tip: the tag must point at the
+          # version-bumped tree, never the pre-bump SHA that triggered the run.
+          git fetch origin "$VERSION_BRANCH"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "v${VERSION}" -m "Release v${VERSION}"
-          git push origin "v${VERSION}"
+          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+            echo "Tag v${VERSION} already exists; nothing to do"
+          else
+            git tag -a "v${VERSION}" -m "Release v${VERSION}" FETCH_HEAD
+            git push origin "v${VERSION}"
+          fi
         env:
           VERSION: ${{ needs.version.outputs.version }}
+          VERSION_BRANCH: ${{ github.ref_name }}

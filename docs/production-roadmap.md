@@ -156,6 +156,8 @@ Add separate jobs for:
 - `release/*` branches stabilize a release candidate.
 - `main` contains production releases only.
 - Required CI checks must pass before merging into `develop` or `main`.
+- Release tags are created automatically from `release/*`/`hotfix/*` branch
+  pushes and always point at the version-bump commit.
 - Semantic versioning must be derived from the release branch and commit
   metadata, with no manual version drift between package metadata and runtime
   version information.
@@ -299,12 +301,15 @@ Create a release candidate only after Phases 1–6 are complete.
 1. Create a `release/x.y.z` branch from `develop`.
 2. Run the complete CI matrix and live acceptance suite.
 3. Review dependency, security, and release notes changes.
-4. Build and verify source and wheel artifacts.
-5. Merge the release branch into `main`.
-6. Create and push the signed semantic-version tag.
-7. Publish artifacts only after the tag workflow passes.
-8. Merge the release changes back into `develop`.
-9. Monitor the first release and record any operational issues.
+4. Push the release branch; `version.yml` commits the version bump and pushes
+   the `vX.Y.Z` tag pointing at the bump commit automatically.
+5. `release.yml` (triggered by the tag) builds the wheel/sdist, Sigstore-signs
+   them, and publishes to PyPI via trusted publishing, emitting an SBOM and a
+   changelog artifact (see `docs/gitflow.md` for the full walkthrough and the
+   one-time PyPI trusted-publisher registration).
+6. Verify the build, signature, and PyPI upload, then merge the release branch
+   into `main` and back into `develop`.
+7. Monitor the first release and record any operational issues.
 
 ## Definition of production-ready
 
