@@ -113,12 +113,16 @@ def remote_config(_docker_container) -> SshConfig:
             password=os.environ.get("DEVX_E2E_SSH_PASSWORD") or base.password,
             key_filename=os.environ.get("DEVX_E2E_SSH_KEY") or base.key_filename,
             remote_path=base.remote_path,
+            # CI/managed test targets are throwaway: their host keys are not
+            # pre-registered, so opt into auto-add for the suite only.
+            allow_unknown_host_keys=True,
         )
 
     _, port = _docker_container
     return SshConfig(
         host="127.0.0.1", username="devx", port=port,
         password="devxpass", remote_path="/config/repo",
+        allow_unknown_host_keys=True,
     )
 
 

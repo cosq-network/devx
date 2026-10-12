@@ -50,6 +50,39 @@ def test_collect_audit_scopes_to_session_and_run(tmp_path: Path):
     assert change_runs == {"run-1"}
 
 
+def test_collect_audit_run_scopes_events_dlq_and_usage(tmp_path: Path):
+    """P0.4: ``--run`` must not drag in unrelated sessions' events/DLQ/usage —
+    only the owning session (and this run's rows) appear in the export."""
+    store, journal, sid = _seed(tmp_path / "sessions.db")
+    other = store.save(None, "other", {"task": "other"})
+    store.append_event(other, "run-2", {"type": "tool_call", "name": "read"})
+    store.add_to_dlq(other, "run-2", "boom2", {"step": 1})
+    store.record_usage(
+        other, "run-2",
+        [{"model": "gpt-4o-mini", "provider": "openai", "prompt_tokens": 7, "completion_tokens": 2, "total_tokens": 9}],
+    )
+    journal.record(run_id="run-2", path=Path("/srv/app/other.py"), before_hash="b", after_hash="a", approved=False)
+
+    scoped = collect_audit(store, journal, run_id="run-1")
+
+    # No session row for the unrelated session.
+    assert not any(r["type"] == "session" and r["id"] == other for r in scoped)
+    # Events come only from the run's owner session.
+    event_sessions = {r["session_id"] for r in scoped if r["type"] == "event"}
+    assert event_sessions == {sid}
+    # Every run-scoped record belongs to run-1.
+    run_ids = {r["run_id"] for r in scoped if r["type"] in {"event", "change", "dlq"}}
+    assert run_ids == {"run-1"}
+    # Usage is aggregated for the owner session, scoped to this run alone.
+    usage = [r for r in scoped if r["type"] == "usage"]
+    assert len(usage) == 1
+    assert usage[0]["session_id"] == sid
+    assert usage[0]["total_tokens"] == 15  # run-1's seed usage, not run-2's 9
+    # dlq rows reference only this run.
+    dlq = [r for r in scoped if r["type"] == "dlq"]
+    assert {r["run_id"] for r in dlq} == {"run-1"}
+
+
 def test_render_audit_jsonl_and_json(tmp_path: Path):
     store, journal, sid = _seed(tmp_path / "sessions.db")
     records = collect_audit(store, journal)

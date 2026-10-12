@@ -74,9 +74,16 @@ fails ambiguously and the operator assumes success.
 **Mitigation.** Liveness is probed before each operation; a dropped transport
 is re-established only against the *same* configured host with backoff. A drop
 mid-command raises a clear `ConnectionError` and invalidates the session.
+Host keys are verified by default (`RejectPolicy`): an unknown or silently
+rekeyed host is refused unless its key is in the `known_hosts` file you point at
+(`DEVX_SSH_KNOWN_HOSTS`) or you explicitly opt in with `--accept-new-keys` /
+`DEVX_SSH_ALLOW_UNKNOWN_KEYS` (throwaway `devx lab` containers, CI ephemeral
+servers).
 
-**Residual risk.** Host-key verification depends on your SSH configuration;
-`devx` does not weaken it, but it also does not replace it.
+**Residual risk.** The `--accept-new-keys` / `DEVX_SSH_ALLOW_UNKNOWN_KEYS`
+opt-in skips first-connection verification by design; use it only for
+disposable targets. Outside that, host-key confusion is mitigated by the
+refusal-to-connect default.
 
 ### T4. Irreversible edits
 
@@ -148,6 +155,12 @@ are never logged.
   command you approve can still make outbound connections.
 - **Multi-tenant isolation inside one container.** Containers are assumed to be
   per-developer or otherwise isolated by the platform.
+- **Following remote symlinks.** On SSH/container backends the sandbox is
+  lexical — the client rejects path strings that escape the root, but it does
+  not resolve symlinks on the far side. A symlink inside the workspace root
+  pointing outside it would be followed by SFTP/`docker exec`. Keep untrusted
+  remote workspaces free of absolute symlinks (the local backend resolves and
+  rejects escaping symlinks itself).
 
 ## Operating recommendations
 

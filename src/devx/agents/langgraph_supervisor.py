@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -175,14 +176,15 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
         from devx.harness.ssh_backend import SshConfig, SshWorkspaceBackend
         ssh_cfg = SshConfig.from_uri(remote_ssh)
         if getattr(settings, "ssh_key_path", ""):
-            ssh_cfg = SshConfig(
-                host=ssh_cfg.host,
-                username=ssh_cfg.username,
-                port=ssh_cfg.port,
-                password=ssh_cfg.password,
+            ssh_cfg = replace(
+                ssh_cfg,
                 key_filename=settings.ssh_key_path,
-                remote_path=ssh_cfg.remote_path,
             )
+        ssh_cfg = replace(
+            ssh_cfg,
+            known_hosts=getattr(settings, "ssh_known_hosts", "") or None,
+            allow_unknown_host_keys=getattr(settings, "ssh_allow_unknown_keys", False),
+        )
         backend = SshWorkspaceBackend(ssh_cfg)
 
     container = getattr(settings, "container", "")

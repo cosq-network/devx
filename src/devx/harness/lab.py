@@ -58,21 +58,32 @@ def start_lab() -> dict[str, str]:
         raise RuntimeError("Docker is required for 'devx lab up' but was not found or not running")
 
     name = f"devx-lab-{uuid.uuid4().hex[:8]}"
-    subprocess.run(
-        [
-            "docker", "run", "-d", "--rm", "--name", name, "-p", "127.0.0.1::2222",
-            "-e", "PUID=1000", "-e", "PGID=1000", "-e", "TZ=UTC",
-            "-e", "PASSWORD_ACCESS=true",
-            "-e", f"USER_PASSWORD={LAB_PASSWORD}",
-            "-e", f"USER_NAME={LAB_USER}",
-            LAB_IMAGE,
-        ],
-        check=True, capture_output=True, timeout=300,
-    )
     try:
-        mapping = subprocess.run(
+        subprocess.run(
+            [
+                "docker", "run", "-d", "--rm", "--name", name, "-p", "127.0.0.1::2222",
+                "-e", "PUID=1000", "-e", "PGID=1000", "-e", "TZ=UTC",
+                "-e", "PASSWORD_ACCESS=true",
+                "-e", f"USER_PASSWORD={LAB_PASSWORD}",
+                "-e", f"USER_NAME={LAB_USER}",
+                LAB_IMAGE,
+            ],
+            check=True, capture_output=True, timeout=300,
+        )
+    except subprocess.CalledProcessError as exc:
+        detail = exc.stderr.decode(errors="replace").strip() or str(exc)
+        raise RuntimeError(f"Could not start lab container: {detail}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Timed out starting the lab container (docker run > 300s)") from exc
+    except FileNotFoundError as exc:
+        raise RuntimeError("Docker was not found on PATH") from exc
+    try:
+        port_result = subprocess.run(
             ["docker", "port", name, "2222"], check=True, capture_output=True, timeout=60
-        ).stdout.decode().strip()
+        )
+        mapping = port_result.stdout.decode().strip()
+        if not mapping:
+            raise RuntimeError("docker port returned no mapping while the container was still starting")
         port = int(mapping.rsplit(":", 1)[-1])
         _wait_for_port(LAB_HOST, port)
         subprocess.run(
@@ -80,9 +91,9 @@ def start_lab() -> dict[str, str]:
              f"mkdir -p {LAB_ROOT} && chown -R 1000:1000 {LAB_ROOT}"],
             check=True, capture_output=True, timeout=60,
         )
-    except Exception:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError, TimeoutError, RuntimeError) as exc:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=60)
-        raise
+        raise RuntimeError(f"Lab container {name} failed to become ready: {exc}") from exc
 
     ssh_uri = f"ssh://{LAB_USER}@{LAB_HOST}:{port}{LAB_ROOT}"
     return {
@@ -94,6 +105,17 @@ def start_lab() -> dict[str, str]:
     }
 
 
-def stop_lab(name: str) -> None:
-    """Force-remove a lab container (idempotent)."""
-    subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=60)
+def stop_lab(name: str) -> bool:
+    """Force-remove a lab container (idempotent).
+
+    Returns ``True`` when a container was removed and ``False`` when there was
+    nothing to stop (e.g. it was already down or never created). Raises
+    ``RuntimeError`` when Docker itself is unavailable.
+    """
+    try:
+        result = subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=60)
+    except FileNotFoundError as exc:
+        raise RuntimeError("Docker is required for 'devx lab down' but was not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Timed out removing lab container {name}") from exc
+    return result.returncode == 0

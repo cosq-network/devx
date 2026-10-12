@@ -29,8 +29,9 @@ class RemoteStub:
     def write_bytes(self, rel, data):
         self.files[rel] = data
 
-    def read_bytes(self, rel, max_bytes):
-        return self.files[rel][:max_bytes]
+    def read_bytes(self, rel, max_bytes=None):
+        data = self.files[rel]
+        return data if max_bytes is None else data[:max_bytes]
 
     def exists(self, rel):
         return rel in self.files
@@ -164,3 +165,39 @@ def test_settings_validate_rejects_unknown_preset(tmp_path: Path):
     settings = Settings(workspace=tmp_path, policy_preset="bogus")
     with pytest.raises(ValueError, match="Unknown policy preset"):
         settings.validate()
+
+
+# ── command tokenisation (Windows quote handling) ──────────────────────────
+
+
+def test_split_command_args_posix_uses_shlex():
+    from devx.harness.permissions import split_command_args
+
+    assert split_command_args('echo "a b" "c d"', posix=True) == ["echo", "a b", "c d"]
+    assert split_command_args("python -m pytest tests/test_x.py", posix=True) == [
+        "python", "-m", "pytest", "tests/test_x.py",
+    ]
+
+
+def test_split_command_args_windows_strips_quotes_keeps_backslashes():
+    """P0.4: on Windows, quoted args must become clean argv tokens and
+    backslashes in paths must survive (shlex posix=True would eat them)."""
+    from devx.harness.permissions import split_command_args
+
+    args = split_command_args(
+        'python -m pytest "tests/test x y.py" --opt "C:\\Users\\dev\\file.txt"',
+        posix=False,
+    )
+    assert args == ["python", "-m", "pytest", "tests/test x y.py", "--opt", "C:\\Users\\dev\\file.txt"]
+
+    # Single quotes are handled the same way.
+    assert split_command_args("git commit -m 'hello world'", posix=False) == [
+        "git", "commit", "-m", "hello world",
+    ]
+
+
+def test_deny_local_writes_policy_checks_command_with_quoted_args(tmp_path: Path):
+    """Quoted arguments still flow through deny-list checks and parse cleanly."""
+    policy = policy_for_preset("deny_local_writes", tmp_path)
+    args = policy.command('echo "safe value"', approved=True)
+    assert args == ["echo", "safe value"]

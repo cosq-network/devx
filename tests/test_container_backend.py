@@ -24,6 +24,8 @@ class FakeContainerRunner:
         self.dirs: set[str] = {"/", "/app"}
         self.timeout_commands: set[str] = set()
         self.scripts: list[str] = []
+        self.pgid: str = ""
+        self.kill_scripts: list[str] = []
 
     def __call__(self, argv, *, input=None, timeout=120):
         script = argv[-1]
@@ -37,6 +39,15 @@ class FakeContainerRunner:
             if path not in self.files:
                 return _Result(1, b"", b"no such file")
             return _Result(0, self.files[path][: int(tokens[2])])
+        if head == "cat":
+            path = tokens[1]
+            if path.startswith("/tmp/devx-cgid-"):
+                return _Result(0, self.pgid.encode())
+            return _Result(0, self.files.get(path, b""))
+        if head == "kill":  # kill -TERM -<pid> ... issued by _kill_group
+            self.kill_scripts.append(script)
+            self.pgid = ""
+            return _Result(0)
         if head == "mkdir":  # mkdir -p P && cat > T && mv -f T DEST
             parent, dest = tokens[2], tokens[11]
             self.dirs.add(parent)
@@ -78,6 +89,8 @@ class FakeContainerRunner:
         return _Result(0)
 
     def _run_command(self, script, timeout):
+        if "echo $$ > " in script:
+            self.pgid = "4242"
         cmd = script.rsplit("&&", 1)[1].strip()
         if cmd in self.timeout_commands:
             raise subprocess.TimeoutExpired(cmd, timeout)
@@ -121,6 +134,17 @@ def test_container_read_write_roundtrip(backend):
     store.write_bytes("src/main.py", b"print('hi')\n")
     assert "/app/src/main.py" in runner.files
     assert store.read_bytes("src/main.py", 1000) == b"print('hi')\n"
+
+
+def test_container_read_bytes_unbounded_uses_cat(backend):
+    """P0.4: ``read_bytes(rel)`` with no cap returns the full file (journal
+    backups must never truncate a large pre-write copy), not ``head -c``."""
+    store, runner = backend
+    payload = b"x" * 5000
+    runner.files["/app/big.bin"] = payload
+    assert store.read_bytes("big.bin") == payload
+    # The bounded path still reads a prefix via head -c.
+    assert store.read_bytes("big.bin", 16) == b"x" * 16
 
 
 def test_container_write_leaves_no_temp_file(backend):
@@ -206,6 +230,10 @@ def test_container_run_command_timeout(backend):
     result = store.run_command("sleep 30", timeout=1, cancellation=CancellationToken(), max_bytes=1000)
     assert result.ok is False
     assert "timed out" in result.output
+    # The recorded pgid must have been signalled inside the container and the
+    # marker cleaned up, even though the docker CLI client itself timed out.
+    assert runner.pgid == ""
+    assert any("kill -TERM" in script for script in runner.kill_scripts)
 
 
 def test_container_run_command_cancelled(backend):

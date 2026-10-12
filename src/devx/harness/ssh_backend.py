@@ -16,6 +16,11 @@ from urllib.parse import urlparse
 from devx.harness.backend import BackendToolResult, WorkspaceBackend
 from devx.harness.runtime import CancellationToken, RunCancelled
 
+# How long ``git ls-files``-based remote file discovery may run before the
+# tool falls back to a (slower) SFTP walk. Prevents a hung remote git process
+# from blocking a tool call indefinitely.
+_FAST_GIT_TIMEOUT = 15.0
+
 IGNORE_DIRS = {
     ".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
     ".venv", "venv", "env", "node_modules", "dist", "build", "target",
@@ -35,6 +40,14 @@ class SshConfig:
     remote_path: str = "."
     proxy_command: str | None = None
     sock: Any = None
+    # Path to a known_hosts file consulted for host-key verification. When set,
+    # unknown- or rekeyed-host connections are refused. When unset the in-memory
+    # key store is empty (every host is unknown) unless allow_unknown_host_keys.
+    known_hosts: str | None = None
+    # Explicit opt-in for throwaway/demo targets (``devx lab`` containers, CI
+    # ephemeral servers): accepts a new host key on first connect instead of
+    # refusing it. See DEVX_SSH_ALLOW_UNKNOWN_KEYS / ``--accept-new-keys``.
+    allow_unknown_host_keys: bool = False
 
     @classmethod
     def load_ssh_config(cls, host: str) -> dict[str, Any]:
@@ -61,10 +74,13 @@ class SshConfig:
     def from_uri(cls, uri: str) -> SshConfig:
         """Parse an SSH URI like ssh://user:pass@host:port/path/to/project or user@host:/path, resolving ~/.ssh/config."""
         explicit_user = False
+        uri_gave_port = False
         if uri.startswith("ssh://"):
             parsed = urlparse(uri)
             host = parsed.hostname or "localhost"
             port = parsed.port or 22
+            if parsed.port is not None:
+                uri_gave_port = True
             if parsed.username:
                 username = parsed.username
                 explicit_user = True
@@ -93,7 +109,14 @@ class SshConfig:
         ssh_cfg = cls.load_ssh_config(host)
         resolved_host = ssh_cfg.get("hostname", host)
         resolved_user = username if explicit_user else ssh_cfg.get("user", username)
-        resolved_port = int(ssh_cfg.get("port", port))
+        # An explicit URI port always wins; ~/.ssh/config only supplies a port
+        # when the URI omits one (so ``ssh://host:49153`` is never silently
+        # redirected to a wildcard ``Port`` stanza in the user's config).
+        resolved_port = int(port)
+        if not uri_gave_port:
+            cfg_port = ssh_cfg.get("port")
+            if cfg_port is not None:
+                resolved_port = int(cfg_port)
         key_filename = None
         if "identityfile" in ssh_cfg:
             identities = ssh_cfg["identityfile"]
@@ -154,7 +177,23 @@ class SshWorkspaceBackend(WorkspaceBackend):
         last_error: Exception | None = None
         for attempt in range(3):
             client = paramiko.SSHClient()
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            # Default to RejectPolicy: an unknown or rekeyed host is refused
+            # instead of silently auto-trusted (MITM surface). Auto-add remains
+            # available only through an explicit opt-in (DEVX_SSH_ALLOW_UNKNOWN_KEYS
+            # / ``--accept-new-keys``) for throwaway targets such as ``devx lab``.
+            policy = (
+                paramiko.AutoAddPolicy()
+                if self.config.allow_unknown_host_keys
+                else paramiko.RejectPolicy()
+            )
+            client.set_missing_host_key_policy(policy)
+            if self.config.known_hosts:
+                try:
+                    # Load a user-provided known_hosts file so RejectPolicy can
+                    # accept hosts it already trusts and refuse everything else.
+                    client.load_host_keys(os.path.expanduser(self.config.known_hosts))
+                except Exception:
+                    pass
 
             connect_kwargs: dict[str, Any] = {
                 "hostname": self.config.host,
@@ -259,24 +298,28 @@ class SshWorkspaceBackend(WorkspaceBackend):
 
     def _resolve(self, rel_path: str) -> str:
         clean = rel_path.strip().replace("\\", "/")
+        root_norm = posixpath.normpath(self.config.remote_path)
         if clean.startswith("/"):
-            # Ensure it starts with remote_path
-            root_norm = posixpath.normpath(self.config.remote_path)
+            # Ensure it starts with remote_path (as a real path boundary, not a
+            # string prefix: ``/srv/app2`` must not pass for root ``/srv/app``).
             clean_norm = posixpath.normpath(clean)
-            if not clean_norm.startswith(root_norm):
+            if not (root_norm in {".", "/"} or clean_norm == root_norm
+                    or clean_norm.startswith(root_norm + "/")):
                 raise PermissionError(f"Path is outside remote workspace: {clean}")
             return clean_norm
         norm = posixpath.normpath(posixpath.join(self.config.remote_path, clean))
-        root_norm = posixpath.normpath(self.config.remote_path)
-        if not norm.startswith(root_norm):
+        if root_norm == ".":
+            if norm == ".." or norm.startswith("../"):
+                raise PermissionError(f"Path is outside remote workspace: {rel_path}")
+        elif root_norm != "/" and norm != root_norm and not norm.startswith(root_norm + "/"):
             raise PermissionError(f"Path is outside remote workspace: {rel_path}")
         return norm
 
-    def read_bytes(self, rel_path: str, max_bytes: int) -> bytes:
+    def read_bytes(self, rel_path: str, max_bytes: int | None = None) -> bytes:
         self._ensure_connected()
         remote = self._resolve(rel_path)
         with self._sftp.open(remote, "rb") as f:
-            return f.read(max_bytes)
+            return f.read() if max_bytes is None else f.read(max_bytes)
 
     def write_bytes(self, rel_path: str, data: bytes) -> None:
         self._ensure_connected()
@@ -406,13 +449,29 @@ class SshWorkspaceBackend(WorkspaceBackend):
             channel = transport.open_session()
             channel.exec_command(cmd)
             data = bytearray()
-            while not channel.exit_status_ready() or channel.recv_ready():
+            # Bound the read loop: a hung remote ``git ls-files`` (huge repo,
+            # wedged process) must not block the tool call indefinitely.
+            deadline = time.monotonic() + _FAST_GIT_TIMEOUT
+            exit_ready = False
+            while time.monotonic() < deadline:
+                if channel.exit_status_ready() and not channel.recv_ready():
+                    exit_ready = True
+                    break
                 if channel.recv_ready():
                     chunk = channel.recv(8192)
                     if chunk:
                         data.extend(chunk)
                 else:
                     time.sleep(0.01)
+            if not exit_ready:
+                # Timed out waiting for the remote process; fall back to the
+                # slower SFTP walk instead of hanging the tool.
+                channel.close()
+                return None
+            while channel.recv_ready():
+                chunk = channel.recv(8192)
+                if chunk:
+                    data.extend(chunk)
             exit_code = channel.recv_exit_status()
             if exit_code == 0 and data:
                 lines = [line.strip().replace("\\", "/") for line in data.decode("utf-8", errors="ignore").splitlines()]

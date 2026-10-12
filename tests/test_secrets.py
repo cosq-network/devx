@@ -119,6 +119,34 @@ def test_read_off_returns_plain(tmp_path: Path):
     assert GITHUB_TOKEN in result.output
 
 
+def test_write_block_refuses_and_does_not_create_file(tmp_path: Path):
+    """P0.4: block mode guards the write path too — secrets must not be
+    persisted to disk, not merely kept out of the model's reads."""
+    tools = _tools(tmp_path, "block")
+    result = tools.write("creds.txt", f"api_key = {GITHUB_TOKEN}\n", approved=True)
+    assert not result.ok
+    assert "Blocked by secret scan" in result.output
+    assert not (tmp_path / "creds.txt").exists()
+
+    # Clean writes still work.
+    assert tools.write("ok.txt", "x = 1\n", approved=True).ok
+
+
+def test_write_warn_attaches_warning_but_writes(tmp_path: Path):
+    tools = _tools(tmp_path, "warn")
+    result = tools.write("creds.txt", f"api_key = {GITHUB_TOKEN}\n", approved=True)
+    assert result.ok
+    assert result.warning and "Potential secret" in result.warning
+    assert (tmp_path / "creds.txt").exists()
+
+
+def test_write_off_does_not_warn(tmp_path: Path):
+    tools = _tools(tmp_path, "off")
+    result = tools.write("creds.txt", f"api_key = {GITHUB_TOKEN}\n", approved=True)
+    assert result.ok
+    assert result.warning is None
+
+
 def test_search_redacts_matched_lines(tmp_path: Path):
     (tmp_path / "a.py").write_text(f"needle {GITHUB_TOKEN} more\n")
     result = _tools(tmp_path, "redact").search("needle", ".")

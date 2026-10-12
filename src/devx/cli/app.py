@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 try:
@@ -42,7 +43,16 @@ if typer is not None:
         if remote:
             from devx.harness.ssh_backend import SshConfig, SshWorkspaceBackend
 
-            return SshWorkspaceBackend(SshConfig.from_uri(remote))
+            settings = Settings.load()
+            ssh_cfg = SshConfig.from_uri(remote)
+            if settings.ssh_key_path or settings.ssh_known_hosts or settings.ssh_allow_unknown_keys:
+                ssh_cfg = replace(
+                    ssh_cfg,
+                    key_filename=settings.ssh_key_path or ssh_cfg.key_filename,
+                    known_hosts=settings.ssh_known_hosts or None,
+                    allow_unknown_host_keys=settings.ssh_allow_unknown_keys,
+                )
+            return SshWorkspaceBackend(ssh_cfg)
         if container:
             from devx.harness.container_backend import ContainerConfig, ContainerWorkspaceBackend
 
@@ -66,6 +76,7 @@ if typer is not None:
         plan_first: bool = typer.Option(True, "--plan-first/--no-plan-first"),  # type: ignore[attr-defined]
         remote: str | None = typer.Option(None, "--remote", "-r", help="Remote SSH workspace URI (ssh://user@host:port/path)"),  # type: ignore[attr-defined]
         ssh_key: str | None = typer.Option(None, "--ssh-key", help="Path to SSH private key"),  # type: ignore[attr-defined]
+        accept_new_keys: bool = typer.Option(False, "--accept-new-keys", help="Auto-add a new SSH host key on first connect (throwaway/lab targets only)"),  # type: ignore[attr-defined]
         container: str | None = typer.Option(None, "--container", help="Container workspace URI (container://name/path)"),  # type: ignore[attr-defined]
         approval_cache: bool = typer.Option(False, "--approval-cache", help="Reuse approval decisions within this run"),  # type: ignore[attr-defined]
         approval_matching: bool = typer.Option(False, "--approval-matching", help="Auto-approve actions matching project permission rules"),  # type: ignore[attr-defined]
@@ -80,6 +91,8 @@ if typer is not None:
             object.__setattr__(settings, "remote_ssh", remote)
         if ssh_key:
             object.__setattr__(settings, "ssh_key_path", ssh_key)
+        if accept_new_keys:
+            object.__setattr__(settings, "ssh_allow_unknown_keys", True)
         if container:
             object.__setattr__(settings, "container", container)
         settings.validate()
@@ -97,16 +110,12 @@ if typer is not None:
         if getattr(settings, "remote_ssh", ""):
             from devx.harness.ssh_backend import SshConfig, SshWorkspaceBackend
             ssh_cfg = SshConfig.from_uri(settings.remote_ssh)
-            if getattr(settings, "ssh_key_path", ""):
-                ssh_cfg = SshConfig(
-                    host=ssh_cfg.host,
-                    username=ssh_cfg.username,
-                    port=ssh_cfg.port,
-                    password=ssh_cfg.password,
-                    key_filename=settings.ssh_key_path,
-                    remote_path=ssh_cfg.remote_path,
-                    proxy_command=ssh_cfg.proxy_command,
-                )
+            ssh_cfg = replace(
+                ssh_cfg,
+                key_filename=settings.ssh_key_path or ssh_cfg.key_filename,
+                known_hosts=settings.ssh_known_hosts or None,
+                allow_unknown_host_keys=settings.ssh_allow_unknown_keys,
+            )
             backend = SshWorkspaceBackend(ssh_cfg)
         elif getattr(settings, "container", ""):
             from devx.harness.container_backend import ContainerConfig, ContainerWorkspaceBackend
@@ -212,17 +221,21 @@ if typer is not None:
                     backend.close()
                 except Exception:
                     pass
+        # Persist the session first so usage rows can be keyed by the session id
+        # (not the session name) and matched by ``devx usage --session`` later.
+        if session:
+            saved_id = store.save(previous["id"] if previous else None, session, result, {"last_run_id": run_id})
+        else:
+            saved_id = None
         # Persist token usage so ``devx usage`` can report tokens and USD cost.
         try:
             from devx.llm import get_token_tracker
 
             usage_entries = get_token_tracker().drain()
             if usage_entries:
-                store.record_usage(previous["id"] if previous else session, run_id, usage_entries)
+                store.record_usage(previous["id"] if previous else saved_id, run_id, usage_entries)
         except Exception:
             pass
-        if session:
-            store.save(previous["id"] if previous else None, session, result, {"last_run_id": run_id})
         print(json.dumps(result) if json_output else result["result"])
 
     @app.command()
@@ -287,6 +300,7 @@ if typer is not None:
         json_output: bool = typer.Option(False, "--json"),  # type: ignore[attr-defined]
         remote: str | None = typer.Option(None, "--remote", "-r", help="Remote SSH workspace URI to preflight (e.g. user@host:/path)"),  # type: ignore[attr-defined]
         ssh_key: str | None = typer.Option(None, "--ssh-key", help="Path to SSH private key for the remote preflight"),  # type: ignore[attr-defined]
+        accept_new_keys: bool = typer.Option(False, "--accept-new-keys", help="Auto-add a new SSH host key on first connect (throwaway/lab targets only)"),  # type: ignore[attr-defined]
     ):
         """Check local configuration and optional dependencies.
 
@@ -300,15 +314,13 @@ if typer is not None:
                 ssh_cfg = SshConfig.from_uri(remote)
             except ValueError as exc:
                 raise typer.BadParameter(f"Invalid remote URI: {exc}") from exc  # type: ignore[attr-defined]
-            if ssh_key:
-                ssh_cfg = SshConfig(
-                    host=ssh_cfg.host,
-                    username=ssh_cfg.username,
-                    port=ssh_cfg.port,
-                    password=ssh_cfg.password,
-                    key_filename=ssh_key,
-                    remote_path=ssh_cfg.remote_path,
-                    proxy_command=ssh_cfg.proxy_command,
+            settings = Settings.load()
+            if ssh_key or settings.ssh_known_hosts or settings.ssh_allow_unknown_keys or accept_new_keys:
+                ssh_cfg = replace(
+                    ssh_cfg,
+                    key_filename=ssh_key or settings.ssh_key_path or ssh_cfg.key_filename,
+                    known_hosts=settings.ssh_known_hosts or None,
+                    allow_unknown_host_keys=settings.ssh_allow_unknown_keys or accept_new_keys,
                 )
             report = preflight_remote(ssh_cfg)
             if json_output:
@@ -648,10 +660,10 @@ if typer is not None:
             loaded = store.load(session)
             session_id = loaded["id"] if loaded else session
         run_id = run
-        if run_id and session_id is None:
-            found_id, _ = store.find_run(run_id)
-            session_id = found_id
-        report = store.aggregate_usage(session_id, run_id)
+        # Usage is aggregated run-scoped whenever a run id is given: rows for a
+        # single run may be keyed by session id, session name, or NULL (anonymous
+        # runs), so filtering by run alone is the only keying-agnostic sum.
+        report = store.aggregate_usage(None if run_id else session_id, run_id)
 
         if markdown:
             title = "Usage receipt"
@@ -921,15 +933,22 @@ if typer is not None:
                 print(json.dumps(info))
                 return
             typer.echo(f"Started disposable remote workspace {info['name']}")  # type: ignore[attr-defined]
-            typer.echo(f"  remote:   devx ask --remote {info['ssh_uri']} --approve-all 'your task here'")  # type: ignore[attr-defined]
+            typer.echo(f"  remote:   devx ask --accept-new-keys --remote {info['ssh_uri']} --approve-all 'your task here'")  # type: ignore[attr-defined]
             typer.echo(f"  container: devx ask --container {info['container_uri']} --approve-all 'your task here'")  # type: ignore[attr-defined]
-            typer.echo(f"  doctor:   devx doctor --remote {info['ssh_uri']}")  # type: ignore[attr-defined]
+            typer.echo(f"  doctor:   devx doctor --accept-new-keys --remote {info['ssh_uri']}")  # type: ignore[attr-defined]
+            typer.echo("  (Every lab container gets a fresh host key; --accept-new-keys auto-trusts this one-time throwaway key.)")  # type: ignore[attr-defined]
             typer.echo(f"  stop:     devx lab down {info['name']}")  # type: ignore[attr-defined]
         elif action == "down":
             if not name:
                 raise typer.BadParameter("Provide the container name: devx lab down <name>")  # type: ignore[attr-defined]
-            stop_lab(name)
-            typer.echo(f"Stopped lab container {name}")  # type: ignore[attr-defined]
+            try:
+                stopped = stop_lab(name)
+            except RuntimeError as exc:
+                raise typer.BadParameter(str(exc)) from exc  # type: ignore[attr-defined]
+            if stopped:
+                typer.echo(f"Stopped lab container {name}")  # type: ignore[attr-defined]
+            else:
+                typer.echo(f"No running lab container {name} (nothing to stop)")  # type: ignore[attr-defined]
         else:
             raise typer.BadParameter("Use: devx lab up | devx lab down <name>")  # type: ignore[attr-defined]
 

@@ -14,6 +14,35 @@ class PermissionError(RuntimeError):
     pass
 
 
+# Tokenizer for the Windows (posix=False) case: strips one level of surrounding
+# quotes from each token without ever treating backslashes as escapes, so
+# ``C:\Users\x\file.py`` survives intact and ``"hello world.txt"`` becomes a
+# single clean argument.
+_WIN_TOKEN_RE = re.compile(r'"([^"]*)"|\'([^\']*)\'|(\S+)')
+
+
+def split_command_args(command: str, *, posix: bool = True) -> list[str]:
+    """Split a command string into argv tokens.
+
+    With ``posix=True`` (the default; used everywhere except Windows) this is
+    plain ``shlex.split`` with quote and escape handling. With ``posix=False``
+    -- i.e. ``os.name == "nt"`` -- tokens are split on whitespace and matching
+    surrounding quotes are stripped per token, but backslashes are literal. This
+    avoids shlex's posix=False behaviour of leaving quote characters embedded in
+    tokens (which then get passed to a real argv and break the command) while
+    still preserving Windows paths that naive posix=True backslash-escaping
+    would mangle.
+    """
+    if posix:
+        return shlex.split(command)
+    tokens: list[str] = []
+    for match in _WIN_TOKEN_RE.finditer(command):
+        token = match.group(1) or match.group(2) or match.group(3)
+        if token:
+            tokens.append(token)
+    return tokens
+
+
 @dataclass(frozen=True)
 class Approval:
     action: str
@@ -274,7 +303,11 @@ class PermissionPolicy:
             raise PermissionError(
                 "remote_only policy forbids executing commands on the local machine"
             )
-        args = shlex.split(command, posix=os.name != "nt") if isinstance(command, str) else list(command)
+        args = (
+            split_command_args(command, posix=os.name != "nt")
+            if isinstance(command, str)
+            else list(command)
+        )
         if not args:
             raise PermissionError("Empty command")
         command_text = " ".join(args)

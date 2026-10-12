@@ -82,6 +82,51 @@ def test_ssh_workspace_backend_prevents_directory_traversal():
     with pytest.raises(PermissionError):
         backend.read_bytes("/etc/passwd", 100)
 
+    # Sibling paths sharing a string prefix with the root must not punch
+    # through: ``/app2`` starts with ``/app`` but is a different workspace.
+    with pytest.raises(PermissionError):
+        backend.read_bytes("../app2/x", 100)
+
+    with pytest.raises(PermissionError):
+        backend.read_bytes("/app2/x", 100)
+
+
+def test_ssh_workspace_root_slash_allows_absolute_paths():
+    mock_client = MagicMock()
+    mock_sftp = MagicMock()
+    mock_file = MagicMock()
+    mock_file.read.return_value = b"remote bytes"
+    mock_sftp.open.return_value.__enter__.return_value = mock_file
+    mock_stat = MagicMock()
+    mock_stat.st_size = 12
+    mock_stat.st_mode = 0o100644
+    mock_sftp.stat.return_value = mock_stat
+
+    cfg = SshConfig(host="mock-host", username="user", remote_path="/")
+    backend = SshWorkspaceBackend(cfg, client=mock_client, sftp=mock_sftp)
+
+    # A workspace rooted at the filesystem root legitimately allows absolutes.
+    assert backend.read_bytes("/etc/hosts", 100) == b"remote bytes"
+
+
+def test_ssh_config_uri_port_wins_over_ssh_config(monkeypatch):
+    monkeypatch.setattr(
+        SshConfig,
+        "load_ssh_config",
+        staticmethod(lambda host: {"hostname": "real-host", "port": "22", "user": "cfguser"}),
+    )
+
+    # An explicit URI port always wins over ~/.ssh/config; config hostname
+    # aliasing and the explicit URI user still apply.
+    cfg = SshConfig.from_uri("ssh://alice@example.com:49153/var/app")
+    assert cfg.port == 49153
+    assert cfg.username == "alice"
+    assert cfg.host == "real-host"
+
+    # Without a URI port, ~/.ssh/config supplies the port.
+    cfg2 = SshConfig.from_uri("ssh://alice@example.com/var/app")
+    assert cfg2.port == 22
+
 
 def test_ssh_workspace_backend_mock_run_command():
     mock_client = MagicMock()
@@ -597,4 +642,94 @@ def test_preflight_remote_closes_owned_backend(monkeypatch):
 
     assert report["status"] == "ok"
     owned.close.assert_called_once()
+
+
+def test_ssh_default_host_key_policy_is_reject(monkeypatch):
+    """P0.3: unknown host keys are refused by default, never auto-trusted."""
+    import sys
+
+    mock_paramiko = MagicMock()
+    mock_client = MagicMock()
+    mock_paramiko.SSHClient.return_value = mock_client
+    mock_client.get_transport.return_value = MagicMock()
+    mock_client.open_sftp.return_value = MagicMock()
+    monkeypatch.setitem(sys.modules, "paramiko", mock_paramiko)
+
+    cfg = SshConfig(host="mock-host", username="user", remote_path="/app")
+    backend = SshWorkspaceBackend(cfg)
+    backend._ensure_connected()
+
+    mock_client.set_missing_host_key_policy.assert_called_once()
+    policy = mock_client.set_missing_host_key_policy.call_args[0][0]
+    assert policy is mock_paramiko.RejectPolicy.return_value
+    assert mock_paramiko.RejectPolicy.called
+    assert not mock_paramiko.AutoAddPolicy.called
+
+
+def test_ssh_allow_unknown_host_keys_opts_into_autoadd(monkeypatch):
+    """P0.3: auto-add stays available, but only through an explicit opt-in."""
+    import sys
+
+    mock_paramiko = MagicMock()
+    mock_client = MagicMock()
+    mock_paramiko.SSHClient.return_value = mock_client
+    mock_client.get_transport.return_value = MagicMock()
+    mock_client.open_sftp.return_value = MagicMock()
+    monkeypatch.setitem(sys.modules, "paramiko", mock_paramiko)
+
+    cfg = SshConfig(host="mock-host", username="user", remote_path="/app", allow_unknown_host_keys=True)
+    backend = SshWorkspaceBackend(cfg)
+    backend._ensure_connected()
+
+    policy = mock_client.set_missing_host_key_policy.call_args[0][0]
+    assert policy is mock_paramiko.AutoAddPolicy.return_value
+    assert mock_paramiko.AutoAddPolicy.called
+    assert not mock_paramiko.RejectPolicy.called
+
+
+def test_ssh_known_hosts_file_is_loaded(monkeypatch, tmp_path):
+    """P0.3: a configured known_hosts file is consulted under RejectPolicy."""
+    import sys
+
+    known_hosts = tmp_path / "known_hosts"
+    known_hosts.write_text("mock-host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI\n", encoding="utf-8")
+
+    mock_paramiko = MagicMock()
+    mock_client = MagicMock()
+    mock_paramiko.SSHClient.return_value = mock_client
+    mock_client.get_transport.return_value = MagicMock()
+    mock_client.open_sftp.return_value = MagicMock()
+    monkeypatch.setitem(sys.modules, "paramiko", mock_paramiko)
+
+    cfg = SshConfig(host="mock-host", username="user", remote_path="/app", known_hosts=str(known_hosts))
+    backend = SshWorkspaceBackend(cfg)
+    backend._ensure_connected()
+
+    policy = mock_client.set_missing_host_key_policy.call_args[0][0]
+    assert policy is mock_paramiko.RejectPolicy.return_value
+    assert mock_paramiko.RejectPolicy.called
+    mock_client.load_host_keys.assert_called_once_with(str(known_hosts))
+
+
+def test_fast_remote_file_discovery_times_out_and_closes_channel(monkeypatch):
+    """P1.4: a hung remote git process falls back instead of blocking forever."""
+    monkeypatch.setattr("devx.harness.ssh_backend._FAST_GIT_TIMEOUT", 0.05)
+
+    mock_client = MagicMock()
+    mock_transport = MagicMock()
+    mock_channel = MagicMock()
+    mock_client.get_transport.return_value = mock_transport
+    mock_transport.open_session.return_value = mock_channel
+    # Neither exit-ready nor any data ever arrives (wedged remote process).
+    mock_channel.exit_status_ready.return_value = False
+    mock_channel.recv_ready.return_value = False
+
+    cfg = SshConfig(host="mock-host", username="user", remote_path="/app")
+    backend = SshWorkspaceBackend(cfg, client=mock_client, sftp=MagicMock())
+
+    result = backend._fast_remote_file_discovery("/app", 100, None)
+
+    assert result is None
+    mock_channel.close.assert_called_once()
+    mock_channel.recv_exit_status.assert_not_called()
 

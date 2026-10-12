@@ -38,13 +38,31 @@ URI forms accepted by `SshConfig.from_uri`:
 | `ssh://user:password@host:port/path` | `ssh://deploy:s3cret@prod:2222/srv/app` |
 
 Details not in the URI are resolved from `~/.ssh/config` (host, user, port,
-`IdentityFile`, `ProxyCommand`) and from the environment:
+`IdentityFile`, `ProxyCommand`) and from the environment. An explicit URI port
+(`ssh://host:49153/path`) always wins over a `Port` stanza in the config:
 
 | Variable / setting | Purpose |
 | --- | --- |
 | `DEVX_REMOTE_SSH` | Default remote URI when `--remote` is not passed |
 | `DEVX_SSH_KEY` | Private key path (`ask --ssh-key` overrides per run) |
+| `DEVX_SSH_KNOWN_HOSTS` | Path to an SSH `known_hosts` file used for host-key verification |
+| `DEVX_SSH_ALLOW_UNKNOWN_KEYS` | Opt-in: auto-add a new host key on first connect (throwaway targets only) |
 | `.devx/config.json` `remote_ssh`, `ssh_key_path` | Project-level defaults |
+
+#### Host-key verification
+
+`devx` refuses to connect to a host whose key it does not recognize
+(`RejectPolicy` — an unknown or silently-rekeyed host fails fast instead of
+being auto-trusted, closing the man-in-the-middle window). Set
+`DEVX_SSH_KNOWN_HOSTS` (or `ssh_known_hosts` in `.devx/config.json`) to the
+`known_hosts` file you already trust, and hosts listed there connect normally
+while everything else is refused.
+
+The only exception is an explicit opt-in: `DEVX_SSH_ALLOW_UNKNOWN_KEYS=1` or the
+`--accept-new-keys` flag on `devx ask` / `devx doctor` auto-adds a *new* host key
+on first connect. This is for throwaway targets only — `devx lab` containers
+(which get a fresh key on every boot) and CI ephemeral servers. `devx lab up`
+prints the `--accept-new-keys` one-liner for exactly this reason.
 
 ### Containers (`container://` / `docker://`)
 
@@ -65,19 +83,33 @@ required, so the container's own filesystem view is authoritative. Set
 ## Safety guarantees
 
 1. **Workspace sandbox.** All paths are resolved against the remote root; any
-   path that escapes it (`../`, absolute paths outside the root) raises
-   immediately. A compromised model prompt cannot reach `/etc/passwd`.
-2. **Process-group cancellation.** Remote commands run under
-   `setsid sh -c '…'`, and the process-group id is captured. Cancelling a run
+   path that escapes it raises immediately. Escape detection uses real path
+   boundaries, so a sibling directory that merely shares a string prefix (for
+   example `/srv/app2` vs a root of `/srv/app`) is rejected — a compromised
+   model prompt cannot reach `/etc/passwd` or a neighbor deployment.
+2. **Process-group cancellation.** SSH commands run under `setsid sh -c '…'`,
+   and the process-group id is captured. Cancelling a run
    or hitting the timeout sends `SIGTERM` to the whole group, so background
    children (`&`, test runners, servers started by the command) die with it —
-   closing the channel is not enough.
+   closing the channel is not enough. In containers, where the `docker exec`
+   client and the exec'd process are separate, the command records its own
+   pid (`echo $$ > /tmp/devx-cgid-…`) and cancel/timeout issues a second
+   `docker exec` that signals that pid — killing the CLI client alone would
+   leave the command running inside the container.
 3. **Hash-guarded undo.** Each write records `before_hash` and `after_hash`.
    Undo restores a file only if its current hash still matches what the run
    produced; otherwise it reports a conflict and leaves the file alone.
 4. **Fail closed.** Connection loss is surfaced as a clear `ConnectionError`
    and the session is invalidated, never silently retried against a different
    host.
+5. **Verified host keys.** Unknown or rekeyed hosts are refused by default
+   (`RejectPolicy`); only a `known_hosts` file you point at
+   (`DEVX_SSH_KNOWN_HOSTS`) or an explicit `--accept-new-keys` /
+   `DEVX_SSH_ALLOW_UNKNOWN_KEYS` opt-in for throwaway targets permits a first
+   connection. Auto-trust is never the silent default.
+6. **Full-size undo backups.** Write backups are read without a size cap, so a
+   pre-existing file *larger* than the read limit is still backed up in full and
+   `devx changes reject` restores it byte-for-byte instead of truncating it.
 
 ## Connection health and recovery
 
@@ -131,8 +163,11 @@ devx changes reject src/legacy.py --run 4f2a1c   # hash-guarded revert
 ```
 
 `reject` reuses the same backend (`--remote` / `--container`) as the run, so it
-reverts the file where the change was made. If the file changed since the run,
-`reject` exits non-zero and leaves it untouched.
+reverts the file where the change was made. The journal stores each change's
+backend-relative path (in addition to the local display path), so `reject` and
+`devx verify --remote`/`--container` resolve a file to the correct spot on the
+remote/container root instead of guessing from a recorded absolute path. If the
+file changed since the run, `reject` exits non-zero and leaves it untouched.
 
 ### Audit trail
 
@@ -152,7 +187,13 @@ per-model pricing table:
 ```bash
 devx usage
 devx usage --session my-session --json
+devx usage --run 4f2a1c --markdown   # single-run cost receipt
 ```
+
+Usage is captured automatically from every model call (planning, agent
+streaming), and `--run` receipts aggregate per run regardless of which key the
+run's rows landed under (session id, session name, or anonymous), so a run's
+cost is always summed correctly.
 
 Models without a known price are listed as *unpriced* rather than estimated.
 
@@ -175,3 +216,9 @@ Models without a known price are listed as *unpriced* rather than estimated.
   life of a run.
 - Policy presets are local to each checkout today; team-wide policy
   distribution is planned.
+- **Sandboxing is lexical on remote/container targets.** Escape detection
+  resolves path boundaries locally on the client, but there is no remote
+  `readlink` traversal: a **symlink inside the workspace root that points
+  outside it** would be followed by SFTP / `docker exec` on the far side. Keep
+  untrusted remote or container workspaces free of absolute symlinks. (The
+  local backend resolves symlinks itself and rejects those escaping the root.)

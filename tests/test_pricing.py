@@ -115,6 +115,121 @@ def test_token_tracker_drain_reports_only_new_entries():
     assert tracker.get_stats().call_count == 2
 
 
+# ── usage recording from LLM responses ────────────────────────────────────
+
+
+def test_record_response_usage_records_usage_metadata():
+    from types import SimpleNamespace
+
+    from devx.llm import get_token_tracker, record_response_usage
+
+    tracker = get_token_tracker()
+    tracker.clear()
+    try:
+        response = SimpleNamespace(
+            usage_metadata={"input_tokens": 120, "output_tokens": 40, "total_tokens": 160},
+            content="ok",
+        )
+        record_response_usage(response, model="gpt-4o-mini", provider="openai")
+        stats = tracker.get_stats()
+        assert stats.call_count == 1
+        assert stats.total_tokens == 160
+        assert stats.by_model["gpt-4o-mini"]["total"] == 160
+    finally:
+        tracker.clear()
+
+
+def test_record_response_usage_skips_metadata_free_responses():
+    from types import SimpleNamespace
+
+    from devx.llm import get_token_tracker, record_response_usage
+
+    tracker = get_token_tracker()
+    tracker.clear()
+    try:
+        # Mocks and streaming fallbacks expose no usage metadata: skipped.
+        record_response_usage(SimpleNamespace(content="no usage"), model="gpt-4o-mini", provider="openai")
+        assert tracker.get_stats().call_count == 0
+    finally:
+        tracker.clear()
+
+
+def test_invoke_with_retry_records_usage():
+    from types import SimpleNamespace
+
+    from devx.llm import get_token_tracker, invoke_with_retry
+
+    class FakeModel:
+        model_name = "gpt-4o-mini"
+
+        def invoke(self, prompt):
+            return SimpleNamespace(
+                usage_metadata={"input_tokens": 300, "output_tokens": 100, "total_tokens": 400},
+                content="plan",
+            )
+
+    tracker = get_token_tracker()
+    tracker.clear()
+    try:
+        response = invoke_with_retry(FakeModel(), "plan a task", provider="openai")
+        assert response.content == "plan"
+        stats = tracker.get_stats()
+        assert stats.call_count == 1
+        assert stats.total_tokens == 400
+        assert stats.by_model["gpt-4o-mini"]["total"] == 400
+    finally:
+        tracker.clear()
+
+
+def test_stream_agent_text_records_usage():
+    from types import SimpleNamespace
+
+    from devx.agents.runtime import stream_agent_text
+    from devx.llm import get_token_tracker
+
+    class FakeAgent:
+        model_name = "gpt-4o-mini"
+
+        def stream(self, messages, stream_mode="messages"):
+            yield (
+                SimpleNamespace(
+                    type="AIMessageChunk",
+                    content="hello",
+                    usage_metadata={"input_tokens": 25, "output_tokens": 5, "total_tokens": 30},
+                ),
+            )
+
+    tracker = get_token_tracker()
+    tracker.clear()
+    try:
+        text = stream_agent_text(FakeAgent(), [{"role": "user", "content": "hi"}])
+        assert text == "hello"
+        stats = tracker.get_stats()
+        assert stats.call_count == 1
+        assert stats.total_tokens == 30
+        assert stats.by_model["gpt-4o-mini"]["total"] == 30
+    finally:
+        tracker.clear()
+
+
+def test_record_usage_resolves_session_name_to_id(tmp_path: Path):
+    from devx.llm import TokenUsage
+
+    store = SessionStore(tmp_path / "sessions.db")
+    sid = store.save(None, "session-mist-42", {"task": "t"})
+
+    # Keying by the session *name* must resolve to the session id so lookups
+    # by the resolved id and by run id agree on the stored rows.
+    store.record_usage(
+        "session-mist-42",
+        "run-9",
+        [TokenUsage(model="gpt-4o-mini", provider="openai", prompt_tokens=10, completion_tokens=5, total_tokens=15)],
+    )
+    assert store.aggregate_usage(sid)["calls"] == 1
+    assert store.aggregate_usage(sid)["total_tokens"] == 15
+    assert store.aggregate_usage(None, "run-9")["calls"] == 1
+
+
 # ── CLI ────────────────────────────────────────────────────────────────────
 
 

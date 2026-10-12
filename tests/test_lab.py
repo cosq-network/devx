@@ -6,6 +6,7 @@ orchestration logic and CLI plumbing with a fake ``subprocess.run``.
 
 import subprocess
 
+import pytest
 from typer.testing import CliRunner
 
 import devx.harness.lab as lab
@@ -61,8 +62,8 @@ def test_cli_lab_up_prints_uris(monkeypatch):
     result = runner.invoke(app, ["lab", "up"])
     assert result.exit_code == 0
     assert "Started disposable remote workspace" in result.output
-    assert "devx ask --remote" in result.output
-    assert "devx doctor --remote" in result.output
+    assert "devx ask --accept-new-keys --remote" in result.output
+    assert "devx doctor --accept-new-keys --remote" in result.output
 
     name = next(
         line.split()[-1]
@@ -102,3 +103,64 @@ def test_cli_lab_unknown_action():
     result = runner.invoke(app, ["lab", "frobnicate"])
     assert result.exit_code == 2
     assert "devx lab up | devx lab down" in result.output
+
+
+def test_start_lab_docker_run_failure_raises_clear_message(monkeypatch):
+    """P0.4: a failed ``docker run`` surfaces the daemon's stderr, not a bare traceback."""
+    monkeypatch.setattr(lab, "docker_available", lambda: True)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["docker", "run"]:
+            proc = subprocess.CompletedProcess(cmd, 1, stdout=b"", stderr=b"port is already allocated\n")
+            if kwargs.get("check"):
+                raise subprocess.CalledProcessError(proc.returncode, cmd, output=proc.stdout, stderr=proc.stderr)
+            return proc
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(lab.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="Could not start lab container: port is already allocated"):
+        lab.start_lab()
+
+
+def test_start_lab_unready_container_cleans_up(monkeypatch):
+    """P0.4: if the container never becomes ready, it is torn down and the
+    failure is reported as a clear RuntimeError."""
+    monkeypatch.setattr(lab, "docker_available", lambda: True)
+    runner_calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        runner_calls.append(cmd)
+        if cmd[:2] == ["docker", "port"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(lab.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="failed to become ready"):
+        lab.start_lab()
+
+    run_cmd = runner_calls[0]
+    created = run_cmd[run_cmd.index("--name") + 1]
+    assert ["docker", "rm", "-f", created] in runner_calls
+
+
+def test_stop_lab_missing_container_returns_false(monkeypatch):
+    """P0.4: tearing down an already-gone lab is not reported as a success."""
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, stdout=b"", stderr=b"No such container")
+
+    monkeypatch.setattr(lab.subprocess, "run", fake_run)
+
+    assert lab.stop_lab("devx-lab-missing") is False
+
+
+def test_cli_lab_down_not_found_message(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, stdout=b"", stderr=b"No such container")
+
+    monkeypatch.setattr(lab.subprocess, "run", fake_run)
+
+    result = runner.invoke(app, ["lab", "down", "devx-lab-zzz"])
+    assert result.exit_code == 0
+    assert "No running lab container devx-lab-zzz" in result.output

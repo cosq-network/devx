@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 try:
@@ -198,15 +199,12 @@ class ActionHandlers:
             cfg = SshConfig.from_uri(uri)
             settings = Settings.load()
             if getattr(settings, "ssh_key_path", ""):
-                cfg = SshConfig(
-                    host=cfg.host,
-                    username=cfg.username,
-                    port=cfg.port,
-                    password=cfg.password,
-                    key_filename=settings.ssh_key_path,
-                    remote_path=cfg.remote_path,
-                    proxy_command=cfg.proxy_command,
-                )
+                cfg = replace(cfg, key_filename=settings.ssh_key_path)
+            cfg = replace(
+                cfg,
+                known_hosts=getattr(settings, "ssh_known_hosts", "") or None,
+                allow_unknown_host_keys=getattr(settings, "ssh_allow_unknown_keys", False),
+            )
             if getattr(self.app, "_remote_backend", None) is not None:
                 try:
                     self.app._remote_backend.close()

@@ -147,23 +147,42 @@ class SessionStore:
     def find_run(self, run_id: str) -> tuple[str | None, list[dict[str, Any]]]:
         """Locate a run id across sessions.
 
-        Returns ``(session_id, events)`` where ``session_id`` is ``None`` when
-        the run has no owning session (events only). Runs are keyed under the
-        session id, the session *name*, or their own run id when the run was
-        anonymous, so this probes the events table directly instead of assuming
-        a particular key.
+        Returns ``(session_id, events)`` where ``session_id`` is the owning
+        session's id — or the first matching event key (e.g. the run's own id
+        for an anonymous run) when no saved session owns it. ``None`` only when
+        the run has no events. Runs are keyed under the session id, the session
+        *name*, or their own run id when the run was anonymous, so this probes
+        every distinct key and merges the events without dropping any.
         """
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT session_id FROM session_events WHERE run_id=? ORDER BY id LIMIT 1",
-                (run_id,),
-            ).fetchone()
-        if not row:
+            keys = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT DISTINCT session_id FROM session_events"
+                    " WHERE run_id=? AND session_id IS NOT NULL",
+                    (run_id,),
+                ).fetchall()
+            ]
+        if not keys:
             return None, []
-        key = row[0]
-        loaded = self.load(key) if key else None
-        session_id = loaded["id"] if loaded else key
-        return session_id, self.events(key, run_id=run_id)
+        session_id: str | None = None
+        for key in keys:
+            loaded = self.load(key) if key else None
+            if loaded is not None:
+                session_id = loaded["id"]
+                break
+        if session_id is None:
+            session_id = keys[0]
+        events: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for key in keys:
+            for event in self.events(key, run_id=run_id):
+                marker = (event["run_id"], json.dumps(event["event"], sort_keys=True, default=str))
+                if marker in seen:
+                    continue
+                seen.add(marker)
+                events.append(event)
+        return session_id, events
 
     # Dead Letter Queue methods
     def add_to_dlq(self, session_id: str, run_id: str, error: str, state: dict[str, Any], metadata: dict[str, Any] | None = None) -> int:
@@ -231,7 +250,19 @@ class SessionStore:
         ``entries`` may be objects exposing ``model``, ``provider``,
         ``prompt_tokens``, ``completion_tokens`` and ``total_tokens`` (the
         ``TokenUsage`` dataclass) or equivalent mappings.
+
+        ``session_id`` may be a session id *or* a session name; names are
+        resolved to the owning id so later ``--session`` lookups agree on the
+        key. ``None`` keyed rows (anonymous runs) are still matched by
+        run-scoped queries.
         """
+        if session_id:
+            try:
+                loaded = self.load(session_id)
+                if loaded is not None:
+                    session_id = loaded["id"]
+            except Exception:
+                pass
         def _field(item: Any, name: str, default: Any = 0) -> Any:
             if isinstance(item, dict):
                 return item.get(name, default)

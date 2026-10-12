@@ -31,6 +31,25 @@ def test_settings_loads_remote_ssh_env_vars(monkeypatch, tmp_path: Path):
     assert legacy_settings.ssh_key_path == "/legacy/key"
 
 
+def test_settings_loads_ssh_host_key_env_vars(monkeypatch, tmp_path: Path):
+    """P0.3: known_hosts / allow-unknown-key settings load from env (with DEV_ fallback)."""
+    monkeypatch.setenv("DEVX_SSH_KNOWN_HOSTS", "C:\\Users\\dev\\.ssh\\known_hosts")
+    monkeypatch.setenv("DEVX_SSH_ALLOW_UNKNOWN_KEYS", "1")
+
+    settings = Settings.load(workspace=tmp_path)
+    assert settings.ssh_known_hosts == "C:\\Users\\dev\\.ssh\\known_hosts"
+    assert settings.ssh_allow_unknown_keys is True
+
+    monkeypatch.delenv("DEVX_SSH_KNOWN_HOSTS")
+    monkeypatch.delenv("DEVX_SSH_ALLOW_UNKNOWN_KEYS")
+    monkeypatch.setenv("DEV_SSH_KNOWN_HOSTS", "/legacy/known_hosts")
+    monkeypatch.setenv("DEV_SSH_ALLOW_UNKNOWN_KEYS", "false")
+
+    legacy_settings = Settings.load(workspace=tmp_path)
+    assert legacy_settings.ssh_known_hosts == "/legacy/known_hosts"
+    assert legacy_settings.ssh_allow_unknown_keys is False
+
+
 def test_cli_ask_passes_remote_and_ssh_key_options(monkeypatch, tmp_path: Path):
     runner = CliRunner()
     captured_settings = []
@@ -347,6 +366,124 @@ def test_change_journal_rollback_remote(tmp_path: Path):
 
     assert len(restored) == 1
     mock_backend.write_bytes.assert_called_once_with("src/main.py", b"original remote content")
+
+
+def test_workspace_tools_remote_write_verify_rollback(tmp_path: Path):
+    """Remote writes record backend-relative paths so drift checks and rollback
+    locate the file without guessing (regression for the rejected/verify path
+    mismatch: recorded local-absolute paths resolved to garbage on remote)."""
+    import hashlib
+
+    from devx.harness.changes import ChangeJournal
+    from devx.harness.permissions import PermissionPolicy
+    from devx.harness.tools import WorkspaceTools
+
+    class FakeRemoteBackend:
+        """Dict-backed stand-in for a remote/container workspace backend."""
+
+        is_remote = True
+        root = "/srv/app"
+
+        def __init__(self) -> None:
+            self.files: dict[str, bytes] = {}
+
+        def exists(self, rel: str) -> bool:
+            return rel in self.files
+
+        def file_hash(self, rel: str) -> str | None:
+            data = self.files.get(rel)
+            return hashlib.sha256(data).hexdigest() if data is not None else None
+
+        def read_bytes(self, rel: str, max_bytes: int | None = None) -> bytes:
+            try:
+                data = self.files[rel]
+                return data if max_bytes is None else data[:max_bytes]
+            except KeyError as exc:
+                raise FileNotFoundError(rel) from exc
+
+        def write_bytes(self, rel: str, data: bytes) -> None:
+            self.files[rel] = data
+
+        def remove(self, rel: str) -> None:
+            self.files.pop(rel, None)
+
+    journal = ChangeJournal(tmp_path / "sessions.db")
+    backend = FakeRemoteBackend()
+    backend.files["src/main.py"] = b"original v1\n"
+    tools = WorkspaceTools(
+        PermissionPolicy(tmp_path),
+        backend=backend,
+        journal=journal,
+        run_id="run-remote-write",
+    )
+
+    result = tools.write("src/main.py", "v2 content\n", approved=True)
+    assert result.ok is True
+
+    # The journal records the backend-relative path, not the local-absolute
+    # display path that previously broke remote drift checks/rollback.
+    records = journal.for_run("run-remote-write")
+    assert len(records) == 1
+    change = records[0]
+    assert change.rel_path == "src/main.py"
+    assert change.path != "src/main.py"
+
+    # Drift check sees the freshly written file as intact.
+    assert [e["status"] for e in journal.verify("run-remote-write", backend=backend)] == ["intact"]
+
+    # Reject restores the original bytes through the backend.
+    assert journal.rollback_one("run-remote-write", "src/main.py", backend=backend) is True
+    assert backend.files["src/main.py"] == b"original v1\n"
+    assert [e["status"] for e in journal.verify("run-remote-write", backend=backend)] == ["reverted"]
+
+    # A hand-edited file is a conflict and rollback leaves it untouched.
+    backend.files["src/main.py"] = b"manual edit\n"
+    assert [e["status"] for e in journal.verify("run-remote-write", backend=backend)] == ["conflict"]
+    assert journal.rollback_one("run-remote-write", "src/main.py", backend=backend) is False
+    assert backend.files["src/main.py"] == b"manual edit\n"
+
+    # New files are removed on rollback (create case uses backend.remove).
+    tools.write("src/new.txt", "brand new\n", approved=True)
+    assert journal.rollback_one("run-remote-write", "src/new.txt", backend=backend) is True
+    assert "src/new.txt" not in backend.files
+
+
+def test_write_backup_captures_full_large_preexisting_file(tmp_path: Path):
+    """P0.4: a pre-existing file larger than max_bytes is backed up in full, so
+    rollback restores it byte-for-byte instead of truncating it at the read cap."""
+    from devx.harness.changes import ChangeJournal
+    from devx.harness.local_backend import LocalWorkspaceBackend
+    from devx.harness.permissions import PermissionPolicy
+    from devx.harness.tools import WorkspaceTools
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    target = workspace / "big.txt"
+    original = b"A" * 65_536  # far above the tiny read cap the tools use
+    target.write_bytes(original)
+
+    journal = ChangeJournal(tmp_path / "sessions.db")
+    tools = WorkspaceTools(
+        PermissionPolicy(workspace),
+        journal=journal,
+        run_id="run-big-backup",
+        max_bytes=1024,
+        backend=LocalWorkspaceBackend(workspace),
+    )
+
+    result = tools.write("big.txt", "small\n", approved=True)
+    assert result.ok is True
+
+    records = journal.for_run("run-big-backup")
+    assert len(records) == 1
+    backup_path = records[0].backup_path
+    assert backup_path is not None
+    # The backup holds the *entire* original, not just the first max_bytes.
+    assert Path(backup_path).read_bytes() == original
+
+    # And rollback restores the full bytes through the local backend.
+    assert journal.rollback_one("run-big-backup", "big.txt") is True
+    assert target.read_bytes() == original
 
 
 def test_suggester_includes_remote_commands():

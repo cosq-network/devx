@@ -45,10 +45,10 @@ class LocalWorkspaceBackend(WorkspaceBackend):
             raise PermissionError(f"Path is outside workspace: {clean}") from exc
         return clean
 
-    def read_bytes(self, rel_path: str, max_bytes: int) -> bytes:
+    def read_bytes(self, rel_path: str, max_bytes: int | None = None) -> bytes:
         target = self._resolve(rel_path)
         with target.open("rb") as f:
-            return f.read(max_bytes)
+            return f.read() if max_bytes is None else f.read(max_bytes)
 
     def write_bytes(self, rel_path: str, data: bytes) -> None:
         target = self._resolve(rel_path)

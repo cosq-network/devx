@@ -30,6 +30,7 @@ class Change:
     after_hash: str | None
     approved: bool
     backup_path: str | None = None
+    rel_path: str | None = None
 
 
 class ChangeJournal:
@@ -40,11 +41,13 @@ class ChangeJournal:
             conn.execute("""CREATE TABLE IF NOT EXISTS changes (
                 id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, path TEXT NOT NULL,
                 before_hash TEXT, after_hash TEXT, approved INTEGER NOT NULL,
-                backup_path TEXT,
+                backup_path TEXT, rel_path TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
             columns = {row[1] for row in conn.execute("PRAGMA table_info(changes)")}
             if "backup_path" not in columns:
                 conn.execute("ALTER TABLE changes ADD COLUMN backup_path TEXT")
+            if "rel_path" not in columns:
+                conn.execute("ALTER TABLE changes ADD COLUMN rel_path TEXT")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=10)
@@ -66,25 +69,44 @@ class ChangeJournal:
             conn.close()
 
     def record(self, run_id: str, path: Path, before_hash: str | None, after_hash: str | None, approved: bool,
-               backup_path: Path | None = None) -> Change:
-        change = Change(run_id, str(path), before_hash, after_hash, approved, str(backup_path) if backup_path else None)
+               backup_path: Path | None = None, rel_path: str | None = None) -> Change:
+        """Record a mutation.
+
+        ``path`` is the display path (e.g. the resolved local path). Remote and
+        container runs also pass ``rel_path`` — the path relative to the backend
+        workspace root — so drift checks and rollback can find the file without
+        guessing how an absolute path maps onto a remote root.
+        """
+        change = Change(run_id, str(path), before_hash, after_hash, approved,
+                        str(backup_path) if backup_path else None, rel_path)
         with self._connection() as conn:
-            conn.execute("INSERT INTO changes(run_id,path,before_hash,after_hash,approved,backup_path) VALUES(?,?,?,?,?,?)",
-                         (run_id, change.path, before_hash, after_hash, int(approved), change.backup_path))
+            conn.execute(
+                "INSERT INTO changes(run_id,path,before_hash,after_hash,approved,backup_path,rel_path)"
+                " VALUES(?,?,?,?,?,?,?)",
+                (run_id, change.path, before_hash, after_hash, int(approved), change.backup_path, change.rel_path),
+            )
         return change
+
+    @staticmethod
+    def _row_to_change(row: Any) -> Change:
+        return Change(row[0], row[1], row[2], row[3], bool(row[4]), row[5], row[6])
 
     def for_run(self, run_id: str) -> list[Change]:
         with self._connection() as conn:
-            rows = conn.execute("SELECT run_id,path,before_hash,after_hash,approved,backup_path FROM changes WHERE run_id=? ORDER BY id", (run_id,)).fetchall()
-        return [Change(row[0], row[1], row[2], row[3], bool(row[4]), row[5]) for row in rows]
+            rows = conn.execute(
+                "SELECT run_id,path,before_hash,after_hash,approved,backup_path,rel_path"
+                " FROM changes WHERE run_id=? ORDER BY id",
+                (run_id,),
+            ).fetchall()
+        return [self._row_to_change(row) for row in rows]
 
     def all_changes(self) -> list[Change]:
         """Return every recorded change, oldest first, for audit export."""
         with self._connection() as conn:
             rows = conn.execute(
-                "SELECT run_id,path,before_hash,after_hash,approved,backup_path FROM changes ORDER BY id"
+                "SELECT run_id,path,before_hash,after_hash,approved,backup_path,rel_path FROM changes ORDER BY id"
             ).fetchall()
-        return [Change(row[0], row[1], row[2], row[3], bool(row[4]), row[5]) for row in rows]
+        return [self._row_to_change(row) for row in rows]
 
     def rollback(self, run_id: str, backend: WorkspaceBackend | None = None) -> list[str]:
         """Restore only files that still match the recorded post-change hash."""
@@ -128,23 +150,28 @@ class ChangeJournal:
         )
 
     @staticmethod
-    def _rel(change_path: str, backend: WorkspaceBackend | None) -> str:
-        """Resolve a recorded change path to a backend-relative path.
+    def _rel(change: Change, backend: WorkspaceBackend | None) -> str:
+        """Resolve a recorded change to a backend-relative path.
 
-        Local changes are stored as absolute paths; remote/container backends
-        work with paths relative to their workspace root.
+        Remote/container runs record a backend-relative ``rel_path`` alongside
+        the display ``path``; that is authoritative whenever present. Older
+        entries without one fall back to deriving a relative path from the
+        recorded absolute path.
         """
         if backend is not None and getattr(backend, "is_remote", False):
+            if change.rel_path:
+                return change.rel_path.strip().replace("\\", "/")
             import posixpath
-            clean = change_path.strip().replace("\\", "/")
+            clean = change.path.strip().replace("\\", "/")
+            root_norm = posixpath.normpath(backend.root)
             if clean.startswith("/"):
-                root_norm = posixpath.normpath(backend.root)
                 clean_norm = posixpath.normpath(clean)
-                if clean_norm.startswith(root_norm):
-                    return posixpath.relpath(clean_norm, root_norm)
-                return clean_norm.lstrip("/")
+                if root_norm not in {".", "/"} and clean_norm != root_norm \
+                        and not clean_norm.startswith(root_norm + "/"):
+                    return clean_norm.lstrip("/")
+                return posixpath.relpath(clean_norm, root_norm) if root_norm not in {".", "/"} else clean_norm.lstrip("/")
             return clean
-        return change_path
+        return change.path
 
     def verify(self, run_id: str | None = None, backend: WorkspaceBackend | None = None) -> list[dict[str, Any]]:
         """Compare recorded change hashes against the current workspace.
@@ -161,7 +188,7 @@ class ChangeJournal:
         records = self.for_run(run_id) if run_id else self.all_changes()
         verified: list[dict[str, Any]] = []
         for change in records:
-            rel = self._rel(change.path, backend)
+            rel = self._rel(change, backend)
             current = (
                 backend.file_hash(rel)
                 if backend is not None
@@ -198,7 +225,7 @@ class ChangeJournal:
         Returns ``True`` when bytes were actually restored/removed.
         """
         if backend is not None and getattr(backend, "is_remote", False):
-            rel = self._rel(change.path, backend)
+            rel = self._rel(change, backend)
             if backend.file_hash(rel) != change.after_hash:
                 return False
             if change.backup_path:

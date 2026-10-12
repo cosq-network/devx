@@ -319,11 +319,14 @@ def stream_agent_text(
     callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> str:
     """Synchronously stream AI message chunks for supervisor worker threads."""
+    from devx.llm import record_response_usage
     chunks: list[str] = []
+    last_message = None
     try:
         updates = agent.stream({"messages": messages}, stream_mode="messages")
         for item in updates:
             message = item[0] if isinstance(item, tuple) else item
+            last_message = message
             if getattr(message, "type", "ai") not in {"ai", "AIMessageChunk"}:
                 continue
             content = getattr(message, "content", "")
@@ -337,8 +340,49 @@ def stream_agent_text(
     except RunCancelled:
         raise
     except (AttributeError, TypeError, RuntimeError):
-        return response_text(agent.invoke({"messages": messages}))
+        result = agent.invoke({"messages": messages})
+        _record_result_usage(result, model=_agent_model_name(agent))
+        return response_text(result)
+    # The final aggregated chunk carries cumulative usage metadata.
+    record_response_usage(last_message, model=_agent_model_name(agent))
     return "".join(chunks)
+
+
+def _agent_model_name(agent: Any) -> str:
+    """Best-effort model name lookup for agent executors; empty when unknown."""
+    for node in (getattr(agent, "agent", None), agent):
+        if node is None:
+            continue
+        value = getattr(node, "model_name", None)
+        if isinstance(value, str) and value:
+            return value
+    try:
+        model = getattr(agent, "model", None) or getattr(getattr(agent, "llm_chain", None), "llm", None)
+        name = getattr(model, "model_name", None) or getattr(model, "model", None)
+        if isinstance(name, str) and name:
+            return name
+        runnable = getattr(agent, "runnable", None)
+        for node in getattr(runnable, "middle", []) or getattr(runnable, "steps", []):
+            name = getattr(node, "model_name", None)
+            if isinstance(name, str) and name:
+                return name
+            inner = getattr(node, "model", None)
+            name = getattr(inner, "model_name", None)
+            if isinstance(name, str) and name:
+                return name
+    except Exception:
+        pass
+    return ""
+
+
+def _record_result_usage(result: dict[str, Any], *, model: str = "") -> None:
+    """Record usage from the last usage-bearing message of an invoke result."""
+    from devx.llm import record_response_usage
+    messages = result.get("messages") or []
+    for message in reversed(messages):
+        if getattr(message, "usage_metadata", None):
+            record_response_usage(message, model=model)
+            return
 
 
 def response_text(result: dict[str, Any]) -> str:

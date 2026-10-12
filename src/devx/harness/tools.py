@@ -119,6 +119,17 @@ class WorkspaceTools:
         if len(encoded) > self.max_bytes:
             return ToolResult(False, f"Content exceeds the {self.max_bytes}-byte file limit")
         rel = target.relative_to(self.policy.workspace).as_posix()
+        # Writes are scanned too: in ``block`` mode a credential must not be
+        # persisted to disk, not just kept away from the model on read.
+        if self.secret_scan_mode == "block":
+            hits = scan_secrets(content)
+            if hits:
+                return ToolResult(False, f"Blocked by secret scan: {self._secret_summary(rel, hits)}")
+        warning = None
+        if self.secret_scan_mode in ("warn", "redact"):
+            hits = scan_secrets(content)
+            if hits:
+                warning = self._secret_summary(rel, hits)
         before = self.backend.file_hash(rel)
         backup = None
         if self.journal and self.backend.exists(rel):
@@ -128,15 +139,21 @@ class WorkspaceTools:
             backup.parent.mkdir(parents=True, exist_ok=True)
             if not backup.exists():
                 try:
-                    backup.write_bytes(self.backend.read_bytes(rel, self.max_bytes))
+                    # Unbounded read: a pre-existing file larger than max_bytes
+                    # must still be captured in full so rollback restores it
+                    # byte-for-byte instead of truncating it to the read cap.
+                    backup.write_bytes(self.backend.read_bytes(rel))
                 except OSError:
                     pass
         try:
             self.backend.write_bytes(rel, encoded)
             after = self.backend.file_hash(rel)
             if self.journal:
-                self.journal.record(self.run_id, target, before, after, approved, backup)
-            return ToolResult(True, f"Wrote {target}")
+                # ``rel`` is the backend-relative path — the only value that lets
+                # drift checks and rollback locate the file on a remote/container
+                # workspace (``target`` is a local-workspace absolute path).
+                self.journal.record(self.run_id, target, before, after, approved, backup, rel_path=rel)
+            return ToolResult(True, f"Wrote {target}", warning=warning)
         except (OSError, UnicodeError) as exc:
             return ToolResult(False, str(exc))
 

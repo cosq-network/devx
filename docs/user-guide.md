@@ -36,7 +36,7 @@ Traditional AI coding assistants either force you to copy-paste code snippets fr
 
 - **You drive intent**: "Refactor the authentication middleware to use JWT bearer tokens."
 - **Agent plans first**: It reads files, designs a concrete plan, and presents it to you.
-- **You stay in control**: Every file modification and shell command requires explicit confirmation (unless explicitly run with `--approve-all` in sandboxed environments), and every file **read** is scanned for secrets (`DEVX_SECRET_SCAN=warn` by default).
+- **You stay in control**: Every file modification and shell command requires explicit confirmation (unless explicitly run with `--approve-all` in sandboxed environments), and every file **read or write** is scanned for secrets (`DEVX_SECRET_SCAN=warn` by default; `block` also refuses secret-bearing writes).
 - **Zero accidental damage**: Atomic writes, before/after checksums, and a portable change journal in SQLite — reversible file-by-file with `devx changes reject`, globally with `/undo`, and auditable for drift with `devx verify`.
 - **Run where the code lives**: The same approvals, journal, and audit trail apply on your local machine, over SSH (`--remote`), or inside a container (`--container`) — your model and keys never leave your side.
 - **No auto-commits**: `devx` never commits to Git automatically. You inspect diffs and commit when satisfied.
@@ -212,7 +212,7 @@ Whenever the agent wants to touch your filesystem or execute a shell command, ex
 
 You decide whether to proceed (`y`) or decline (`n`). By default, all file writes and shell commands require approval (`DEVX_APPROVAL_REQUIRED=true` by default). You can use `--approve-all` only in trusted, isolated workspaces.
 
-File **reads** are guarded too: every file the agent opens is scanned for API keys, tokens, and private keys. With `DEVX_SECRET_SCAN=warn` (the default) you get a warning; `redact` masks matches before they reach the model, and `block` refuses the read entirely.
+File **reads** are guarded too: every file the agent opens is scanned for API keys, tokens, and private keys. With `DEVX_SECRET_SCAN=warn` (the default) you get a warning; `redact` masks matches before they reach the model, and `block` refuses the read entirely. Writes are scanned on the same path — in `block` mode a write whose content contains a credential is refused, so a secret can't be persisted to disk either.
 
 ### 3. Persistent SQLite Sessions
 
@@ -421,6 +421,11 @@ devx usage --run 4f2a1c --markdown  # single-run cost receipt
 
 Models without a known price are reported as *unpriced* rather than estimated.
 
+Usage is recorded automatically from every LLM call (planning, agent streaming),
+so receipts reflect real token spend. `--run` receipts aggregate per run
+regardless of the key the rows landed under — session id, session name, or an
+anonymous run — so a single run's cost is always summed correctly.
+
 ### `devx audit`
 
 Export a portable audit trail — sessions, agent events, journal changes, the dead-letter queue, and token usage — in one stream:
@@ -604,6 +609,8 @@ devx changes reject src/legacy.py # drop one file, hash-guarded
 
 `devx verify` reports each change as `intact` (untouched), `reverted` (already undone), `conflict` (the file changed since the run), or `missing` (deleted). It exits `1` on conflict/missing, so it slots into CI after an agent run.
 
+Remote and container runs record each change's backend-relative path in the journal, so `devx changes reject` and `devx verify --remote`/`--container` resolve files to the right spot on the remote/container root — previously a recorded local path could not be mapped back reliably, and remote drift checks reported everything as `missing`.
+
 ### 6. Secret Hygiene (`devx scan-secrets`)
 
 Sweep before committing or opening a PR:
@@ -612,7 +619,7 @@ Sweep before committing or opening a PR:
 devx scan-secrets src/
 ```
 
-Each hit shows `file:line  kind  snippet`, and the command exits `1` on any hit — wire it into CI or a pre-commit hook. The same scanner runs on every agent file *read* when `DEVX_SECRET_SCAN` is `warn`/`redact`/`block`. Placeholder and test keys legitimately trip it, so scope sweeps to real code or treat the tripwire as a deliberate gate.
+Each hit shows `file:line  kind  snippet`, and the command exits `1` on any hit — wire it into CI or a pre-commit hook. The same scanner runs on every agent file *read or write* when `DEVX_SECRET_SCAN` is `warn`/`redact`/`block` (in `block` mode a write containing a credential is refused). Placeholder and test keys legitimately trip it, so scope sweeps to real code or treat the tripwire as a deliberate gate.
 
 ### 7. PR-Ready Reports & Cost Receipts
 
@@ -632,13 +639,14 @@ Try governed remote execution with zero infrastructure:
 ```bash
 devx lab up
 # Started disposable remote workspace devx-lab-a1b2c3d4
-#   remote:    devx ask --remote ssh://devx@127.0.0.1:49153/config/repo --approve-all 'your task here'
+#   remote:    devx ask --accept-new-keys --remote ssh://devx@127.0.0.1:49153/config/repo --approve-all 'your task here'
 #   container: devx ask --container container://devx-lab-a1b2c3d4/config/repo --approve-all 'your task here'
-#   doctor:    devx doctor --remote ssh://devx@127.0.0.1:49153/config/repo
+#   doctor:    devx doctor --accept-new-keys --remote ssh://devx@127.0.0.1:49153/config/repo
+#   (Every lab container gets a fresh host key; --accept-new-keys auto-trusts this one-time throwaway key.)
 #   stop:      devx lab down devx-lab-a1b2c3d4
 ```
 
-The lab container binds to `127.0.0.1` with a random host port — never exposed to the network. The repo's `docker-compose.yml` (`docker compose up -d`) boots the identical workspace declaratively.
+The lab container binds to `127.0.0.1` with a random host port — never exposed to the network. Each boot generates a fresh host key, which is why the printed SSH one-liner includes `--accept-new-keys`; for a persistent server, pin the key in a `known_hosts` file instead (`DEVX_SSH_KNOWN_HOSTS`). The repo's `docker-compose.yml` (`docker compose up -d`) boots the identical workspace declaratively.
 
 ---
 
@@ -675,12 +683,14 @@ DEVX_DECOUPLED_CONTEXT_ENABLED=true         # Decouple planner/coder contexts to
 # Remote SSH Workspace
 DEVX_REMOTE_SSH=ssh://ubuntu@host/srv/app   # Remote workspace URI or ~/.ssh/config host alias
 DEVX_SSH_KEY=~/.ssh/id_ed25519              # Optional private key path override
+DEVX_SSH_KNOWN_HOSTS=~/.ssh/known_hosts     # Optional: verify host keys against this file (unknown hosts refused)
+DEVX_SSH_ALLOW_UNKNOWN_KEYS=false           # true only for throwaway/lab targets (auto-adds a new host key)
 
 # Container Workspace
 DEVX_CONTAINER=container://devx-lab-a1b2c3d4/config/repo  # Default container URI (or "container" in .devx/config.json)
 
 # Governance & Trust
-DEVX_SECRET_SCAN=warn       # off | warn | redact | block — scan agent file reads for secrets
+DEVX_SECRET_SCAN=warn       # off | warn | redact | block — scan agent file reads and writes for secrets
 DEVX_POLICY_PRESET=default  # default | remote_only | deny_local_writes | protected | strict
 DEVX_SESSION_DB=~/.devx/sessions.db   # SQLite session + change-journal database
 DEVX_CACHE_DB=~/.devx/cache.db        # Semantic cache database

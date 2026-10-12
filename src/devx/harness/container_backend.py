@@ -14,6 +14,7 @@ import posixpath
 import re
 import shlex
 import subprocess  # nosec B404 - fixed argv, no shell=True, values are quoted.
+import threading
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -111,9 +112,14 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
 
     # ── filesystem ──────────────────────────────────────────────────────
 
-    def read_bytes(self, rel_path: str, max_bytes: int) -> bytes:
+    def read_bytes(self, rel_path: str, max_bytes: int | None = None) -> bytes:
         remote = self._resolve(rel_path)
-        result = self._exec(f"head -c {int(max_bytes)} {shlex.quote(remote)}")
+        # An unbounded read uses ``cat``; a bounded one uses ``head -c`` so the
+        # remote side stops early on huge files instead of streaming them all.
+        if max_bytes is None:
+            result = self._exec(f"cat {shlex.quote(remote)}")
+        else:
+            result = self._exec(f"head -c {int(max_bytes)} {shlex.quote(remote)}")
         if getattr(result, "returncode", 1) != 0:
             raise OSError(self._stderr(result) or f"Could not read {rel_path}")
         return self._decode(result)
@@ -209,20 +215,61 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
         if cancellation.cancelled:
             raise RunCancelled("Container command cancelled")
         cmd_str = " ".join(shlex.quote(c) for c in command) if isinstance(command, list) else command
+        # Record the shell's pid so timeout/cancellation can kill the process
+        # inside the container. Killing the docker CLI client alone does not
+        # stop the exec'd process, so unlike the SSH backend we issue a second
+        # ``docker exec`` to signal the recorded pid.
+        marker = f"/tmp/devx-cgid-{uuid.uuid4().hex}"
         script = (
             f"cd {shlex.quote(self.config.remote_path)} && "
             f"if [ -f .venv/bin/activate ]; then . .venv/bin/activate; fi && "
+            f"echo $$ > {shlex.quote(marker)} && "
             f"{cmd_str}"
         )
+        done = threading.Event()
+
+        def _watcher() -> None:
+            while not done.wait(0.1):
+                if cancellation.cancelled:
+                    self._kill_group(marker)
+                    return
+
+        watcher = threading.Thread(target=_watcher, daemon=True)
+        watcher.start()
         try:
-            result = self._exec(script, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            return BackendToolResult(False, "Remote command timed out", -1)
+            try:
+                result = self._exec(script, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                self._kill_group(marker)
+                return BackendToolResult(False, "Remote command timed out", -1)
+        finally:
+            done.set()
         if cancellation.cancelled:
+            self._kill_group(marker)
             raise RunCancelled("Container command cancelled")
         output = self._decode(result) + self._as_bytes(getattr(result, "stderr", b""))
         text = re.sub(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", output.decode("utf-8", errors="replace"))[:max_bytes]
         return BackendToolResult(getattr(result, "returncode", 1) == 0, text, getattr(result, "returncode", 1))
+
+    def _kill_group(self, marker: str) -> None:
+        """Best-effort kill of the command process identified by ``marker``."""
+        try:
+            cat = self._exec(f"cat {shlex.quote(marker)}")
+            token = self._decode(cat).decode("ascii", errors="ignore").strip().split()
+            pid = token[0] if token else ""
+        except Exception:
+            pid = ""
+        try:
+            if pid.isdigit():
+                self._exec(
+                    f"kill -TERM -{pid} 2>/dev/null; kill -TERM {pid} 2>/dev/null; "
+                    f"sleep 0.2; kill -KILL -{pid} 2>/dev/null; "
+                    f"rm -f {shlex.quote(marker)}"
+                )
+            else:
+                self._exec(f"rm -f {shlex.quote(marker)}")
+        except Exception:
+            pass
 
     def close(self) -> None:
         """No persistent connection to release; containers are managed externally."""

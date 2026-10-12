@@ -157,7 +157,13 @@ def invoke_with_retry(
     
     for attempt in range(rp.max_attempts):
         try:
-            return cb.call(lambda: model.invoke(prompt))
+            response = cb.call(lambda: model.invoke(prompt))
+            record_response_usage(
+                response,
+                model=getattr(model, "model_name", "") or getattr(model, "model", "") or "",
+                provider=provider,
+            )
+            return response
         except Exception as exc:
             last_error = exc
             # Check if we should retry
@@ -499,12 +505,12 @@ def extract_token_usage(response: Any, model: str = "", provider: str = "") -> T
     usage = TokenUsage(model=model, provider=provider)
     
     # Try to get token usage from response
-    if hasattr(response, 'usage_metadata'):
+    if getattr(response, 'usage_metadata', None):
         metadata = response.usage_metadata
         usage.prompt_tokens = metadata.get('input_tokens', 0)
         usage.completion_tokens = metadata.get('output_tokens', 0)
         usage.total_tokens = metadata.get('total_tokens', 0)
-    elif hasattr(response, 'response_metadata'):
+    elif getattr(response, 'response_metadata', None):
         metadata = response.response_metadata
         if 'token_usage' in metadata:
             tu = metadata['token_usage']
@@ -518,3 +524,21 @@ def extract_token_usage(response: Any, model: str = "", provider: str = "") -> T
         usage.total_tokens = token_usage.get('total_tokens', 0)
     
     return usage
+
+
+def record_response_usage(response: Any, *, model: str = "", provider: str = "") -> None:
+    """Best-effort: persist usage metadata from a model response.
+
+    Responses that carry no usage metadata (mocks, some streaming fallbacks)
+    are skipped so zero-token rows never pollute cost reports. Never raises:
+    cost accounting must not be able to fail a run.
+    """
+    try:
+        usage = extract_token_usage(response, model=model, provider=provider)
+    except Exception:
+        return
+    usage.prompt_tokens = int(usage.prompt_tokens or 0)
+    usage.completion_tokens = int(usage.completion_tokens or 0)
+    usage.total_tokens = int(usage.total_tokens or 0)
+    if usage.prompt_tokens or usage.completion_tokens or usage.total_tokens:
+        get_token_tracker().record(usage)

@@ -226,8 +226,10 @@ Both `DEVX_*` and legacy `DEV_*` variable names are supported, with `DEVX_*` tak
 | `DEVX_WORKSPACE` | `cwd` (current working directory) | Workspace root directory |
 | `DEVX_REMOTE_SSH` | `""` | Remote workspace SSH target (`user@host:/path` or `ssh://...`) |
 | `DEVX_SSH_KEY` | `""` | Path to private SSH key for remote authentication |
+| `DEVX_SSH_KNOWN_HOSTS` | `""` | Path to an SSH `known_hosts` file used for host-key verification |
+| `DEVX_SSH_ALLOW_UNKNOWN_KEYS` | `false` | Auto-add a new SSH host key on first connect (throwaway/lab targets only) |
 | `DEVX_CONTAINER` | `""` | Default container workspace URI (`container://name/path`) |
-| `DEVX_SECRET_SCAN` | `warn` | Secret scan on agent reads: `off`, `warn`, `redact`, or `block` |
+| `DEVX_SECRET_SCAN` | `warn` | Secret scan on agent reads and writes: `off`, `warn`, `redact`, or `block` |
 | `DEVX_POLICY_PRESET` | `""` | Policy preset: `remote_only`, `deny_local_writes`, `protected`, or `strict` |
 | `DEVX_SESSION_DB` | `~/.devx/sessions.db` | SQLite session database path |
 | `DEVX_CACHE_DB` | `~/.devx/cache.db` | Semantic cache database path |
@@ -460,10 +462,12 @@ devx scan-secrets .env            # a single file
 devx scan-secrets . --json
 ```
 
-By default the agent also scans every file it reads. Set
+By default the agent also scans every file it reads **and writes**. Set
 `DEVX_SECRET_SCAN=warn|redact|block|off` (default `warn`) to control whether
 secrets are warned about, masked out of the model context, refused, or
-ignored.
+ignored. In `block` mode a write whose content contains a credential is refused
+too — a secret can't be persisted to disk, not just kept out of the model
+context.
 
 ### `devx lab`
 
@@ -476,7 +480,10 @@ devx lab down devx-lab-a1b2c3d4
 ```
 
 `lab up` prints ready-to-paste `--remote` and `--container` URIs backed by the
-same container image the SSH end-to-end test suite uses. For a declarative,
+same container image the SSH end-to-end test suite uses. Each lab container gets
+a fresh host key, so the printed SSH one-liner includes `--accept-new-keys` to
+auto-trust that one-time throwaway key (real servers should add the key to a
+`known_hosts` file and set `DEVX_SSH_KNOWN_HOSTS` instead). For a declarative,
 inspectable alternative, `docker-compose.yml` in the repo root boots the same
 workspace (`docker compose up -d`).
 

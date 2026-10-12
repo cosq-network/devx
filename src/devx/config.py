@@ -160,6 +160,16 @@ class Settings(BaseModel):
     remote_ssh: str = Field(default="", description="Remote SSH workspace URI")
     ssh_key_path: str = Field(default="", description="Path to SSH private key")
     container: str = Field(default="", description="Container workspace URI (container://name/path)")
+    # Path to an SSH known_hosts file used to verify remote host keys. When set
+    # (and ssh_allow_unknown_keys is off), hosts not already listed are refused.
+    ssh_known_hosts: str = Field(
+        default="", description="Path to an SSH known_hosts file for host-key verification"
+    )
+    # Opt-in to auto-accept a new SSH host key on first connect. Only intended
+    # for throwaway/demo targets (devx lab containers, CI ephemeral servers).
+    ssh_allow_unknown_keys: bool = Field(
+        default=False, description="Auto-add a new SSH host key on first connect (throwaway targets only)"
+    )
     secret_scan_mode: str = Field(
         default=SECRET_SCAN_MODE_DEFAULT,
         description="Secret scanning on agent reads: off, warn, redact, or block",
@@ -371,6 +381,8 @@ class Settings(BaseModel):
         )
         remote_ssh = get("DEVX_REMOTE_SSH", "", "DEV_REMOTE_SSH")
         ssh_key_path = get("DEVX_SSH_KEY", "", "DEV_SSH_KEY")
+        ssh_known_hosts = get("DEVX_SSH_KNOWN_HOSTS", "", "DEV_SSH_KNOWN_HOSTS")
+        ssh_allow_unknown_keys = boolean("DEVX_SSH_ALLOW_UNKNOWN_KEYS", False, "DEV_SSH_ALLOW_UNKNOWN_KEYS")
         container = get("DEVX_CONTAINER", "", "DEV_CONTAINER")
         policy_preset = str(
             get("DEVX_POLICY_PRESET", str(project.get("policy_preset", "")), "DEV_POLICY_PRESET")
@@ -431,6 +443,8 @@ class Settings(BaseModel):
             decoupled_context_enabled=decoupled_context_enabled,
             remote_ssh=remote_ssh,
             ssh_key_path=ssh_key_path,
+            ssh_known_hosts=ssh_known_hosts,
+            ssh_allow_unknown_keys=ssh_allow_unknown_keys,
             container=container,
             secret_scan_mode=secret_scan_mode,
         )

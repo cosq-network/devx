@@ -29,8 +29,12 @@ class WorkspaceBackend(abc.ABC):
         ...
 
     @abc.abstractmethod
-    def read_bytes(self, rel_path: str, max_bytes: int) -> bytes:
-        """Read up to max_bytes from a workspace-relative file."""
+    def read_bytes(self, rel_path: str, max_bytes: int | None = None) -> bytes:
+        """Read from a workspace-relative file.
+
+        ``max_bytes`` bounds the read; ``None`` reads the full file (used for
+        change-journal backups so a pre-write copy is never truncated).
+        """
         ...
 
     @abc.abstractmethod

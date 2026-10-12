@@ -24,10 +24,30 @@ def collect_audit(
     session_id: str | None = None,
     run_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Collect audit records, each tagged with a ``type`` discriminator."""
-    records: list[dict[str, Any]] = []
+    """Collect audit records, each tagged with a ``type`` discriminator.
 
-    if session_id:
+    ``run_id`` narrows the export to a single run: only the owning session (when
+    one exists) is included, events are merged from whichever keying recorded
+    them, and DLQ/usage records are filtered to that run, so a ``--run`` export
+    never drags in unrelated sessions' rows.
+    """
+    records: list[dict[str, Any]] = []
+    run_filter = run_id is not None
+
+    if run_filter:
+        owner_sid, run_events = store.find_run(run_id)
+        sessions = [store.load(owner_sid)] if owner_sid and store.load(owner_sid) else []
+        for event in run_events:
+            records.append(
+                {
+                    "type": "event",
+                    "session_id": owner_sid,
+                    "run_id": event.get("run_id"),
+                    "event": event.get("event"),
+                    "created_at": event.get("created_at"),
+                }
+            )
+    elif session_id:
         session = store.load(session_id)
         sessions = [session] if session else []
     else:
@@ -44,22 +64,27 @@ def collect_audit(
                 "updated_at": item.get("updated_at"),
             }
         )
-        for event in store.events(sid):
-            records.append(
-                {
-                    "type": "event",
-                    "session_id": sid,
-                    "run_id": event.get("run_id"),
-                    "event": event.get("event"),
-                    "created_at": event.get("created_at"),
-                }
-            )
-        for entry in store.get_dlq_entries(sid):
+        if not run_filter:
+            for event in store.events(sid):
+                records.append(
+                    {
+                        "type": "event",
+                        "session_id": sid,
+                        "run_id": event.get("run_id"),
+                        "event": event.get("event"),
+                        "created_at": event.get("created_at"),
+                    }
+                )
+        entries = store.get_dlq_entries(sid)
+        if run_filter:
+            entries = [entry for entry in entries if entry.get("run_id") == run_id]
+        for entry in entries:
             records.append({"type": "dlq", **entry})
-        records.append({"type": "usage", "session_id": sid, **store.aggregate_usage(sid)})
+        usage = store.aggregate_usage(sid, run_id=run_id) if run_filter else store.aggregate_usage(sid)
+        records.append({"type": "usage", "session_id": sid, **usage})
 
     if journal is not None:
-        changes = journal.for_run(run_id) if run_id else journal.all_changes()
+        changes = journal.for_run(run_id) if run_filter else journal.all_changes()
         for change in changes:
             records.append({"type": "change", **asdict(change)})
 
