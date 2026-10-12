@@ -39,11 +39,7 @@ class SupervisorRunner:
     plan_only: bool = False
 
     def __post_init__(self) -> None:
-        policy = PermissionPolicy(
-            self.settings.workspace,
-            self.settings.approval_required,
-            getattr(self.settings, "permission_rules", ()),
-        )
+        policy = PermissionPolicy.from_settings(self.settings)
         self.policy = policy
         journal = ChangeJournal(self.settings.session_db)
         self.sessions = SessionStore(self.settings.session_db)

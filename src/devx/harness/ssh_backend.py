@@ -130,9 +130,20 @@ class SshWorkspaceBackend(WorkspaceBackend):
     def is_remote(self) -> bool:
         return True
 
-    def _ensure_connected(self) -> None:
-        if self._connected and self._client is not None:
+    def _ensure_connected(self, *, force: bool = False) -> None:
+        """Ensure a live connection, reconnecting automatically when dropped.
+
+        A previously-established connection whose transport is no longer active
+        is transparently replaced, so a dropped link surfaces as at most one
+        failed operation instead of poisoning every later call. ``force`` skips
+        the liveness probe and always reconnects.
+        """
+        if not force and self._connected and self._client is not None and self._transport_active():
             return
+        if self._client is not None and not force:
+            # Stale/dead connection detected; drop it before reconnecting.
+            self._reset()
+
         try:
             import paramiko
         except ImportError as exc:
@@ -140,32 +151,111 @@ class SshWorkspaceBackend(WorkspaceBackend):
                 "Remote SSH support requires paramiko. Install with: pip install 'devx-coding-agent[ssh]' or pip install paramiko"
             ) from exc
 
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        
-        connect_kwargs: dict[str, Any] = {
-            "hostname": self.config.host,
-            "port": self.config.port,
-            "username": self.config.username,
-            "timeout": 15,
-        }
-        if self.config.password:
-            connect_kwargs["password"] = self.config.password
-        if self.config.key_filename:
-            connect_kwargs["key_filename"] = self.config.key_filename
-        if self.config.proxy_command:
-            import paramiko
-            connect_kwargs["sock"] = paramiko.ProxyCommand(self.config.proxy_command)
+        last_error: Exception | None = None
+        for attempt in range(3):
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
-        client.connect(**connect_kwargs)
-        # Enable TCP keepalive on transport (sends packet every 15s to keep NAT/firewalls alive)
-        transport = client.get_transport()
-        if transport is not None:
-            transport.set_keepalive(15)
+            connect_kwargs: dict[str, Any] = {
+                "hostname": self.config.host,
+                "port": self.config.port,
+                "username": self.config.username,
+                "timeout": 15,
+            }
+            if self.config.password:
+                connect_kwargs["password"] = self.config.password
+            if self.config.key_filename:
+                connect_kwargs["key_filename"] = self.config.key_filename
+            if self.config.proxy_command:
+                connect_kwargs["sock"] = paramiko.ProxyCommand(self.config.proxy_command)
 
-        self._client = client
-        self._sftp = client.open_sftp()
-        self._connected = True
+            try:
+                client.connect(**connect_kwargs)
+            except Exception as exc:  # noqa: BLE001 - surfaced as a clear connection error
+                last_error = exc
+                try:
+                    client.close()
+                except Exception:
+                    pass
+                if attempt < 2:
+                    time.sleep(0.5 * (2 ** attempt))
+                continue
+
+            # Enable TCP keepalive on transport (sends packet every 15s to keep NAT/firewalls alive)
+            transport = client.get_transport()
+            if transport is not None:
+                try:
+                    transport.set_keepalive(15)
+                except Exception:
+                    pass
+
+            self._client = client
+            self._sftp = client.open_sftp()
+            self._connected = True
+            return
+
+        raise ConnectionError(
+            f"Could not connect to SSH host {self.config.host}:{self.config.port} "
+            f"after 3 attempts: {last_error}"
+        ) from last_error
+
+    def _transport_active(self) -> bool:
+        """Return whether the current transport is still usable."""
+        try:
+            transport = self._client.get_transport() if self._client is not None else None
+        except Exception:
+            return False
+        if transport is None:
+            return False
+        probe = getattr(transport, "is_active", None)
+        if not callable(probe):
+            return True
+        try:
+            return bool(probe())
+        except Exception:
+            return False
+
+    def _reset(self) -> None:
+        """Drop the current connection without raising."""
+        if self._sftp is not None:
+            try:
+                self._sftp.close()
+            except Exception:
+                pass
+            self._sftp = None
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+            self._client = None
+        self._connected = False
+
+    def reconnect(self) -> None:
+        """Force a fresh connection, used after a detected drop."""
+        self._reset()
+        self._ensure_connected(force=True)
+
+    def ensure_connected(self) -> None:
+        """Public hook that establishes the connection (used by preflight)."""
+        self._ensure_connected()
+
+    def health_check(self) -> bool:
+        """Run a trivial remote command, reconnecting once if the link dropped.
+
+        Returns ``True`` when the workspace is reachable and responsive.
+        """
+        for force in (False, True):
+            try:
+                self._ensure_connected(force=force)
+                result = self.run_command(
+                    ["true"], timeout=10, cancellation=CancellationToken(), max_bytes=1024
+                )
+                if result.ok:
+                    return True
+            except Exception:  # noqa: BLE001 - health checks must never raise
+                self._reset()
+        return False
 
     def _resolve(self, rel_path: str) -> str:
         clean = rel_path.strip().replace("\\", "/")
@@ -362,14 +452,43 @@ class SshWorkspaceBackend(WorkspaceBackend):
         max_bytes: int,
     ) -> BackendToolResult:
         self._ensure_connected()
+        try:
+            return self._run_command_once(command, timeout, cancellation, max_bytes)
+        except RunCancelled:
+            raise
+        except (OSError, EOFError) as exc:
+            # A dropped link surfaces as an OSError/EOFError. Invalidate the
+            # connection so the next call reconnects, and report clearly.
+            self._reset()
+            raise ConnectionError(
+                f"Remote connection lost while running command: {exc}"
+            ) from exc
+
+    def _run_command_once(
+        self,
+        command: list[str] | str,
+        timeout: float,
+        cancellation: CancellationToken,
+        max_bytes: int,
+    ) -> BackendToolResult:
         cmd_str = " ".join(shlex.quote(c) for c in command) if isinstance(command, list) else command
-        
-        # Priority 2: Remote virtualenv auto-activation
-        # If .venv/bin/activate exists in remote_path, source it before executing command
-        full_remote_cmd = (
+
+        # Record the remote process-group id so cancellation/timeout can kill
+        # the whole process tree; closing an SSH channel is not a guaranteed
+        # process kill on the remote host.
+        pgid_path = f"/tmp/devx-pgid-{uuid.uuid4().hex}"
+        inner = (
+            f"echo $$ > {shlex.quote(pgid_path)}; "
             f"cd {shlex.quote(self.config.remote_path)} && "
             f"if [ -f .venv/bin/activate ]; then . .venv/bin/activate; fi && "
             f"{cmd_str}"
+        )
+        quoted = shlex.quote(inner)
+        # Prefer ``setsid`` so the command becomes its own session/process group
+        # leader; fall back to a plain shell where setsid is unavailable.
+        full_remote_cmd = (
+            f"if command -v setsid >/dev/null 2>&1; then setsid sh -c {quoted}; "
+            f"else sh -c {quoted}; fi"
         )
 
         transport = self._client.get_transport()
@@ -384,9 +503,11 @@ class SshWorkspaceBackend(WorkspaceBackend):
         while not channel.exit_status_ready():
             if cancellation.cancelled:
                 channel.close()
+                self._kill_remote_group(pgid_path)
                 raise RunCancelled("Remote command cancelled")
             if time.monotonic() - started > timeout:
                 channel.close()
+                self._kill_remote_group(pgid_path)
                 timed_out = True
                 break
             while channel.recv_ready():
@@ -410,10 +531,53 @@ class SshWorkspaceBackend(WorkspaceBackend):
         # Strip ANSI escape codes to keep clean test diagnostics
         ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
         text = ansi_escape.sub("", text)
+        self._cleanup_pgid_file(pgid_path)
         if timed_out:
             bounded = ("Remote command timed out\n" + text).encode("utf-8")[:max_bytes].decode("utf-8", errors="replace")
             return BackendToolResult(False, bounded, exit_code)
         return BackendToolResult(exit_code == 0, text, exit_code)
+
+    def _cleanup_pgid_file(self, pgid_path: str) -> None:
+        """Best-effort removal of the per-command process-group marker."""
+        if self._sftp is None:
+            return
+        try:
+            self._sftp.remove(pgid_path)
+        except Exception:
+            pass
+
+    def _remote_pgid(self, pgid_path: str) -> int | None:
+        """Read the remote process-group id written by ``_run_command_once``."""
+        if self._sftp is None:
+            return None
+        try:
+            with self._sftp.open(pgid_path, "rb") as stream:
+                raw = stream.read(64)
+        except Exception:
+            return None
+        if not raw:
+            return None
+        text = raw.decode("ascii", errors="ignore").strip().split()[0] if raw.strip() else ""
+        return int(text) if text.isdigit() else None
+
+    def _kill_remote_group(self, pgid_path: str) -> bool:
+        """Best-effort kill of the remote process group. Never raises."""
+        pgid = self._remote_pgid(pgid_path)
+        if pgid is None:
+            return False
+        try:
+            transport = self._client.get_transport() if self._client is not None else None
+            if transport is None:
+                return False
+            channel = transport.open_session()
+            channel.exec_command(
+                f"kill -TERM -{pgid} 2>/dev/null; sleep 0.2; "
+                f"kill -KILL -{pgid} 2>/dev/null; rm -f {shlex.quote(pgid_path)}"
+            )
+            channel.close()
+            return True
+        except Exception:
+            return False
 
     def close(self) -> None:
         if self._sftp:
@@ -429,3 +593,92 @@ class SshWorkspaceBackend(WorkspaceBackend):
                 pass
             self._client = None
         self._connected = False
+
+
+def preflight_remote(
+    config: SshConfig,
+    backend: Any = None,
+    *,
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    """Validate a remote workspace without running the agent.
+
+    Returns a JSON-serialisable report. ``status`` is ``"error"`` only when a
+    hard requirement fails (connection, workspace directory, or writability);
+    an absent git work tree or virtualenv is reported as ``"missing"`` but is
+    not fatal. Owns and closes the backend when it creates it.
+    """
+    checks: dict[str, Any] = {}
+    owns_backend = backend is None
+    if backend is None:
+        backend = SshWorkspaceBackend(config)
+
+    try:
+        backend.ensure_connected()
+    except Exception as exc:  # noqa: BLE001 - report, do not raise
+        checks["connection"] = {"status": "error", "detail": str(exc)}
+        return _preflight_report(config, checks, backend if owns_backend else None)
+
+    checks["connection"] = {"status": "ok"}
+
+    # ── workspace path ──
+    is_dir = False
+    try:
+        is_dir = bool(backend.is_dir("."))
+        checks["workspace_path"] = (
+            {"status": "ok"} if is_dir else {"status": "error", "detail": "remote path is not a directory"}
+        )
+    except Exception as exc:  # noqa: BLE001
+        checks["workspace_path"] = {"status": "error", "detail": str(exc)}
+
+    # ── writability ──
+    if is_dir:
+        probe = f".devx-preflight-{uuid.uuid4().hex}"
+        try:
+            backend.write_bytes(probe, b"ok")
+            backend.remove(probe)
+            checks["writable"] = {"status": "ok"}
+        except Exception as exc:  # noqa: BLE001
+            checks["writable"] = {"status": "error", "detail": str(exc)}
+    else:
+        checks["writable"] = {"status": "skipped"}
+
+    # ── git work tree ──
+    try:
+        result = backend.run_command(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            timeout=timeout,
+            cancellation=CancellationToken(),
+            max_bytes=4096,
+        )
+        if getattr(result, "ok", False) and "true" in (getattr(result, "output", "") or "").lower():
+            checks["git"] = {"status": "ok"}
+        else:
+            checks["git"] = {"status": "missing", "detail": "not a git work tree"}
+    except Exception as exc:  # noqa: BLE001
+        checks["git"] = {"status": "missing", "detail": str(exc)}
+
+    # ── virtualenv (optional) ──
+    try:
+        checks["venv"] = {"status": "ok"} if backend.exists(".venv/bin/activate") else {"status": "missing"}
+    except Exception as exc:  # noqa: BLE001
+        checks["venv"] = {"status": "missing", "detail": str(exc)}
+
+    return _preflight_report(config, checks, backend if owns_backend else None)
+
+
+def _preflight_report(config: SshConfig, checks: dict[str, Any], backend_to_close: Any) -> dict[str, Any]:
+    if backend_to_close is not None:
+        try:
+            backend_to_close.close()
+        except Exception:
+            pass
+    has_error = any(entry.get("status") == "error" for entry in checks.values())
+    return {
+        "remote": config.host,
+        "port": config.port,
+        "username": config.username,
+        "path": config.remote_path,
+        "status": "error" if has_error else "ok",
+        "checks": checks,
+    }

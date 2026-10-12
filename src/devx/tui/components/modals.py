@@ -78,9 +78,10 @@ class ApprovalModal(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="approval-dialog"):
-            yield Label(f"Approve {self.request.action}: {self.request.target}")
-            yield Label("Proposed action")
-            yield Static(self.request.reason[:12000], markup=False, id="approval-preview")
+            yield Label(f"Approve {self.request.action}: {self.request.target}", id="approval-summary")
+            yield Label("Reason", id="approval-reason-label")
+            yield Static(self.request.reason, markup=False, id="approval-preview")
+            yield Label(f"Action: {self.request.action} | Target: {self.request.target}", id="approval-details")
             yield Button("Approve", id="approve")
             yield Button("Deny", id="deny")
             yield Button("Cancel run", id="cancel")

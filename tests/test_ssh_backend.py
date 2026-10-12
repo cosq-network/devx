@@ -5,11 +5,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from devx.harness.backend import WorkspaceBackend
-from devx.harness.local_backend import LocalWorkspaceBackend
+from devx.harness.backend import BackendToolResult
 from devx.harness.permissions import PermissionPolicy
-from devx.harness.runtime import CancellationToken
-from devx.harness.ssh_backend import SshConfig, SshWorkspaceBackend
+from devx.harness.runtime import CancellationToken, RunCancelled
+from devx.harness.ssh_backend import SshConfig, SshWorkspaceBackend, preflight_remote
 from devx.harness.tools import WorkspaceTools
 
 
@@ -360,4 +359,242 @@ def test_ssh_workspace_backend_close():
     assert backend._connected is False
     assert backend._sftp is None
     assert backend._client is None
+
+
+def _mock_paramiko(monkeypatch, connect_side_effect=None):
+    import sys
+
+    mock_paramiko = MagicMock()
+    mock_client = MagicMock()
+    mock_transport = MagicMock()
+    mock_sftp = MagicMock()
+    mock_paramiko.SSHClient.return_value = mock_client
+    mock_client.get_transport.return_value = mock_transport
+    mock_client.open_sftp.return_value = mock_sftp
+    if connect_side_effect is not None:
+        mock_client.connect.side_effect = connect_side_effect
+    monkeypatch.setitem(sys.modules, "paramiko", mock_paramiko)
+    return mock_client, mock_transport, mock_sftp
+
+
+def test_ssh_workspace_backend_reconnects_when_transport_inactive(monkeypatch):
+    """P0.1: a dropped transport is transparently replaced on the next call."""
+    mock_client, mock_transport, _ = _mock_paramiko(monkeypatch)
+
+    cfg = SshConfig(host="prod", username="user", remote_path="/app")
+    backend = SshWorkspaceBackend(cfg)
+
+    mock_transport.is_active.return_value = True
+    backend._ensure_connected()
+    assert backend._connected is True
+    assert mock_client.connect.call_count == 1
+
+    # The link drops: the next ensure must reconnect rather than reuse it.
+    mock_transport.is_active.return_value = False
+    backend._ensure_connected()
+    assert backend._connected is True
+    assert mock_client.connect.call_count == 2
+
+
+def test_ssh_workspace_backend_connect_failure_raises_clear_error(monkeypatch):
+    """P0.1: a failed connect surfaces a clear, typed error."""
+    _mock_paramiko(monkeypatch, connect_side_effect=OSError("connection refused"))
+    monkeypatch.setattr("devx.harness.ssh_backend.time.sleep", lambda *_: None)
+
+    cfg = SshConfig(host="unreachable", username="user", remote_path="/app")
+    backend = SshWorkspaceBackend(cfg)
+
+    with pytest.raises(ConnectionError, match="Could not connect to SSH host unreachable:22"):
+        backend._ensure_connected()
+
+
+def test_ssh_workspace_backend_run_command_reports_connection_loss():
+    """P0.1: a mid-command drop raises ConnectionError and invalidates state."""
+    mock_client = MagicMock()
+    mock_transport = MagicMock()
+    mock_client.get_transport.return_value = mock_transport
+    mock_transport.open_session.side_effect = OSError("socket closed")
+
+    cfg = SshConfig(host="mock-host", username="user", remote_path="/app")
+    backend = SshWorkspaceBackend(cfg, client=mock_client, sftp=MagicMock())
+
+    with pytest.raises(ConnectionError, match="Remote connection lost"):
+        backend.run_command(["pytest"], timeout=10, cancellation=CancellationToken(), max_bytes=1000)
+    assert backend._connected is False
+
+
+def test_ssh_workspace_backend_command_runs_under_setsid():
+    """P0.3: commands run in their own session so the process group is killable."""
+    mock_client = MagicMock()
+    mock_transport = MagicMock()
+    mock_channel = MagicMock()
+    mock_client.get_transport.return_value = mock_transport
+    mock_transport.open_session.return_value = mock_channel
+    mock_channel.exit_status_ready.side_effect = [False, True]
+    mock_channel.recv_ready.side_effect = [True, False, False]
+    mock_channel.recv.return_value = b"ok\n"
+    mock_channel.recv_exit_status.return_value = 0
+
+    cfg = SshConfig(host="mock-host", username="user", remote_path="/app")
+    backend = SshWorkspaceBackend(cfg, client=mock_client, sftp=MagicMock())
+
+    result = backend.run_command(["pytest"], timeout=10, cancellation=CancellationToken(), max_bytes=1000)
+    assert result.ok is True
+    command = mock_channel.exec_command.call_args[0][0]
+    assert "setsid sh -c" in command
+    assert "echo $$ >" in command
+
+
+def test_ssh_workspace_backend_cancel_kills_remote_process_group():
+    """P0.3: cancellation kills the remote process group, not just the channel."""
+    mock_client = MagicMock()
+    mock_transport = MagicMock()
+    mock_channel = MagicMock()
+    mock_client.get_transport.return_value = mock_transport
+    mock_transport.open_session.return_value = mock_channel
+    mock_channel.exit_status_ready.return_value = False
+
+    cfg = SshConfig(host="mock-host", username="user", remote_path="/app")
+    backend = SshWorkspaceBackend(cfg, client=mock_client, sftp=MagicMock())
+    backend._remote_pgid = MagicMock(return_value=4242)
+
+    token = CancellationToken()
+    token.cancel()
+    with pytest.raises(RunCancelled):
+        backend.run_command(["pytest"], timeout=10, cancellation=token, max_bytes=1000)
+
+    commands = [call.args[0] for call in mock_channel.exec_command.call_args_list]
+    assert any("kill -TERM -4242" in command for command in commands)
+
+
+def test_ssh_workspace_backend_timeout_kills_remote_process_group(monkeypatch):
+    """P0.3: a timed-out command also kills the remote process group."""
+    mock_client = MagicMock()
+    mock_transport = MagicMock()
+    mock_channel = MagicMock()
+    mock_client.get_transport.return_value = mock_transport
+    mock_transport.open_session.return_value = mock_channel
+    mock_channel.exit_status_ready.return_value = False
+    mock_channel.recv_ready.return_value = False
+
+    cfg = SshConfig(host="mock-host", username="user", remote_path="/app")
+    backend = SshWorkspaceBackend(cfg, client=mock_client, sftp=MagicMock())
+    backend._remote_pgid = MagicMock(return_value=777)
+
+    # Advance the clock so the first timeout check trips immediately.
+    clock = iter([0.0, 100.0, 100.0])
+    monkeypatch.setattr("devx.harness.ssh_backend.time.monotonic", lambda: next(clock))
+
+    result = backend.run_command(["pytest"], timeout=5, cancellation=CancellationToken(), max_bytes=1000)
+    assert result.ok is False
+    assert "timed out" in result.output
+    commands = [call.args[0] for call in mock_channel.exec_command.call_args_list]
+    assert any("kill -TERM -777" in command for command in commands)
+
+
+def test_ssh_workspace_backend_kill_group_without_pgid_is_noop():
+    """P0.3: killing without a readable pgid is a safe no-op."""
+    mock_client = MagicMock()
+    backend = SshWorkspaceBackend(
+        SshConfig(host="h", username="u", remote_path="/app"),
+        client=mock_client,
+        sftp=MagicMock(),
+    )
+    backend._remote_pgid = MagicMock(return_value=None)
+    assert backend._kill_remote_group("/tmp/devx-pgid-x") is False
+
+
+def test_ssh_workspace_backend_health_check_ok(monkeypatch):
+    """P1.4: a responsive workspace reports healthy."""
+    mock_client, mock_transport, _ = _mock_paramiko(monkeypatch)
+    mock_channel = MagicMock()
+    mock_transport.open_session.return_value = mock_channel
+    mock_channel.exit_status_ready.side_effect = [False, True]
+    mock_channel.recv_ready.side_effect = [True, False, False]
+    mock_channel.recv.return_value = b""
+    mock_channel.recv_exit_status.return_value = 0
+
+    cfg = SshConfig(host="mock-host", username="user", remote_path="/app")
+    backend = SshWorkspaceBackend(cfg, client=mock_client, sftp=MagicMock())
+
+    assert backend.health_check() is True
+
+
+def test_ssh_workspace_backend_health_check_never_raises(monkeypatch):
+    """P1.4: an unreachable workspace reports unhealthy instead of raising."""
+    mock_client, mock_transport, _ = _mock_paramiko(monkeypatch)
+    mock_transport.open_session.side_effect = OSError("socket closed")
+
+    cfg = SshConfig(host="mock-host", username="user", remote_path="/app")
+    backend = SshWorkspaceBackend(cfg, client=mock_client, sftp=MagicMock())
+
+    assert backend.health_check() is False
+
+
+def test_preflight_remote_all_checks_ok():
+    backend = MagicMock()
+    backend.is_dir.return_value = True
+    backend.exists.return_value = True
+    backend.run_command.return_value = BackendToolResult(True, "true\n", 0)
+
+    report = preflight_remote(SshConfig(host="h", username="u", remote_path="/app"), backend=backend)
+
+    assert report["status"] == "ok"
+    assert report["checks"]["connection"]["status"] == "ok"
+    assert report["checks"]["workspace_path"]["status"] == "ok"
+    assert report["checks"]["writable"]["status"] == "ok"
+    assert report["checks"]["git"]["status"] == "ok"
+    assert report["checks"]["venv"]["status"] == "ok"
+    # An externally supplied backend is not closed by preflight.
+    backend.close.assert_not_called()
+
+
+def test_preflight_remote_missing_git_and_venv_is_non_fatal():
+    backend = MagicMock()
+    backend.is_dir.return_value = True
+    backend.exists.return_value = False
+    backend.run_command.return_value = BackendToolResult(False, "fatal: not a git repository\n", 128)
+
+    report = preflight_remote(SshConfig(host="h", username="u", remote_path="/app"), backend=backend)
+
+    assert report["status"] == "ok"
+    assert report["checks"]["git"]["status"] == "missing"
+    assert report["checks"]["venv"]["status"] == "missing"
+
+
+def test_preflight_remote_connection_failure_is_fatal():
+    backend = MagicMock()
+    backend.ensure_connected.side_effect = OSError("authentication failed")
+
+    report = preflight_remote(SshConfig(host="h", username="u", remote_path="/app"), backend=backend)
+
+    assert report["status"] == "error"
+    assert report["checks"]["connection"]["status"] == "error"
+    assert "authentication failed" in report["checks"]["connection"]["detail"]
+
+
+def test_preflight_remote_non_writable_path_is_fatal():
+    backend = MagicMock()
+    backend.is_dir.return_value = True
+    backend.exists.return_value = False
+    backend.run_command.return_value = BackendToolResult(False, "not a repo", 128)
+    backend.write_bytes.side_effect = OSError("permission denied")
+
+    report = preflight_remote(SshConfig(host="h", username="u", remote_path="/readonly"), backend=backend)
+
+    assert report["status"] == "error"
+    assert report["checks"]["writable"]["status"] == "error"
+
+
+def test_preflight_remote_closes_owned_backend(monkeypatch):
+    owned = MagicMock()
+    owned.is_dir.return_value = True
+    owned.exists.return_value = True
+    owned.run_command.return_value = BackendToolResult(True, "true", 0)
+    monkeypatch.setattr("devx.harness.ssh_backend.SshWorkspaceBackend", lambda cfg: owned)
+
+    report = preflight_remote(SshConfig(host="h", username="u", remote_path="/app"))
+
+    assert report["status"] == "ok"
+    owned.close.assert_called_once()
 

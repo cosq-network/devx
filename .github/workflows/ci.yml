@@ -61,6 +61,28 @@ jobs:
       - name: Check for secrets
         run: python -m pip install detect-secrets && detect-secrets scan --baseline .secrets.baseline
 
+  remote-e2e:
+    name: Remote SSH e2e (real sshd)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt', '**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      - name: Install development dependencies
+        run: python -m pip install -c constraints.txt -e ".[dev,cli,tui,agent,ssh]"
+      - name: Run real SSH end-to-end tests
+        env:
+          DEVX_E2E_REMOTE: '1'
+        run: python -m pytest -q tests/test_remote_e2e.py
+
   package:
     runs-on: ubuntu-latest
     steps:

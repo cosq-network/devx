@@ -62,11 +62,7 @@ def build_model_graph(settings: Any, files: list[str] | None = None) -> AgentGra
     from pathlib import Path
 
     from devx.harness.permissions import PermissionPolicy
-    policy = PermissionPolicy(
-        settings.workspace,
-        settings.approval_required,
-        getattr(settings, "permission_rules", ()),
-    )
+    policy = PermissionPolicy.from_settings(settings)
     context = read_context([policy.path(Path(item)) for item in (files or [])], settings.max_file_bytes)
 
     def run(state: DevxState) -> DevxState:
@@ -79,11 +75,7 @@ def build_model_graph(settings: Any, files: list[str] | None = None) -> AgentGra
             from devx.harness.tools import WorkspaceTools
             agent = build_coding_agent(
                 settings,
-                WorkspaceTools(PermissionPolicy(
-                    settings.workspace,
-                    settings.approval_required,
-                    getattr(settings, "permission_rules", ()),
-                )),
+                WorkspaceTools(PermissionPolicy.from_settings(settings)),
             )
             content = response_text(agent.invoke({"messages": [{"role": "user", "content": prompt}]}))
         except (ImportError, RuntimeError):

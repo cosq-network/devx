@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, Field, field_validator
+
 
 def _load_env_file(path: Path) -> dict[str, str]:
+    """Load environment variables from a .env file.
+
+    Values are stripped of surrounding quotes and an ``export `` prefix.
+    """
     values: dict[str, str] = {}
     if not path.is_file():
         return values
@@ -34,44 +39,191 @@ def _load_project_config(root: Path) -> dict[str, Any]:
     return value
 
 
-@dataclass(frozen=True)
-class Settings:
-    base_url: str = "http://localhost:4000/v1"
-    api_key: str = "sk-placeholder"
-    model: str = "gpt-4o"
-    provider: str = "openai"
-    workspace: Path = field(default_factory=Path.cwd)
-    session_db: Path = field(default_factory=lambda: Path.home() / ".devx" / "sessions.db")
-    cache_db: Path = field(default_factory=lambda: Path.home() / ".devx" / "cache.db")
-    approval_required: bool = True
-    max_iterations: int = 8
-    max_tool_calls: int = 40
-    command_timeout: float = 120.0
-    test_command: str = ""
-    max_file_bytes: int = 1_000_000
-    max_context_files: int = 15
-    lint_command: str = ""
-    embeddings_enabled: bool = False
-    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
-    embedding_cache_dir: Path = field(default_factory=lambda: Path.home() / ".cache" / "devx" / "embeddings")
-    embeddings_offline: bool = True
-    tracing_enabled: bool = False
-    auto_context: bool = True
-    permission_rules: tuple[dict[str, str], ...] = ()
-    plugin_paths: tuple[str, ...] = ()
-    mcp_servers: tuple[dict[str, Any], ...] = ()
-    context_compaction_enabled: bool = True
-    max_context_messages: int = 24
-    max_context_chars: int = 24_000
-    compaction_summary_chars: int = 4_000
-    diagnostic_distillation_enabled: bool = True
-    diagnostic_distillation_max_chars: int = 4_000
-    decoupled_context_enabled: bool = True
-    remote_ssh: str = ""
-    ssh_key_path: str = ""
+# ── Default configuration values ──────────────────────────────────────
+# Centralized magic numbers for better maintainability
+
+MAX_TOOL_CALLS_DEFAULT = 40
+COMMAND_TIMEOUT_DEFAULT = 120.0
+MAX_CONTEXT_FILES_DEFAULT = 5
+MAX_CONTEXT_MESSAGES_DEFAULT = 24
+DIAGNOSTIC_DISTILLATION_MAX_CHARS_DEFAULT = 4000
+DIAGNOSTIC_DISTILLATION_MIN_CHARS = 100
+CONTEXT_MIN_MESSAGES = 2
+CONTEXT_MIN_CHARS = 256
+CONTEXT_SUMMARY_MIN_CHARS = 128
+
+# Context budget modes
+CONTEXT_BUDGET_MODE_FIXED = "fixed"
+CONTEXT_BUDGET_MODE_ADAPTIVE = "adaptive"
+
+# Priority levels for message retention
+CONTEXT_PRIORITY_CRITICAL = "critical"
+CONTEXT_PRIORITY_HIGH = "high"
+CONTEXT_PRIORITY_NORMAL = "normal"
+CONTEXT_PRIORITY_LOW = "low"
+CONTEXT_PRIORITY_MIN = 0
+CONTEXT_PRIORITY_MAX = 100
+
+# Context budget modes
+CONTEXT_BUDGET_MODE_FIXED = "fixed"
+CONTEXT_BUDGET_MODE_ADAPTIVE = "adaptive"
+
+# Priority levels for message retention
+CONTEXT_PRIORITY_CRITICAL = "critical"
+CONTEXT_PRIORITY_HIGH = "high"
+CONTEXT_PRIORITY_NORMAL = "normal"
+CONTEXT_PRIORITY_LOW = "low"
+CONTEXT_PRIORITY_MIN = 0
+CONTEXT_PRIORITY_MAX = 100
+
+class Settings(BaseModel):
+    """Configuration settings for devx, loaded with environment variable precedence.
+
+    Settings are resolved in order of precedence:
+    1. Environment variables (``DEVX_*`` or legacy ``DEV_*``)
+    2. Workspace ``.env`` file
+    3. User global config (``~/.devx/config.env``)
+    4. Non-secret project config (``.devx/config.json``)
+    5. Built-in defaults
+    """
+
+    # LLM configuration
+    base_url: str = Field(default="http://localhost:4000/v1", description="OpenAI-compatible API endpoint")
+    api_key: str = Field(default="sk-placeholder", description="API key for the LLM provider")
+    model: str = Field(default="gpt-4o", description="Model name to use")
+    provider: str = Field(default="openai", description="Provider: openai, anthropic, google, azure")
+
+    # Workspace configuration
+    workspace: Path = Field(default_factory=Path.cwd, description="Workspace root directory")
+    session_db: Path = Field(
+        default_factory=lambda: Path.home() / ".devx" / "sessions.db",
+        description="SQLite session database path",
+    )
+    cache_db: Path = Field(
+        default_factory=lambda: Path.home() / ".devx" / "cache.db",
+        description="Semantic cache database path",
+    )
+    approval_required: bool = Field(default=True, description="Require approval for file writes and commands")
+    max_iterations: int = Field(default=8, description="Maximum agent loop iterations per run")
+    max_tool_calls: int = Field(default=MAX_TOOL_CALLS_DEFAULT, description="Maximum tool calls per run")
+    command_timeout: float = Field(default=COMMAND_TIMEOUT_DEFAULT, description="Shell command timeout in seconds")
+    test_command: str = Field(default="", description="Custom test command for tester agent")
+    max_file_bytes: int = Field(default=1_000_000, description="Maximum file size to read (bytes)")
+    max_context_files: int = Field(default=MAX_CONTEXT_FILES_DEFAULT, description="Maximum files selected for each run (fixed mode)")
+    context_budget_mode: str = Field(
+        default=CONTEXT_BUDGET_MODE_FIXED, description="Context budgeting mode: fixed or adaptive"
+    )
+    lint_command: str = Field(default="", description="Optional lint command")
+
+    # Token optimization
+    embeddings_enabled: bool = Field(default=False, description="Enable local ONNX embeddings")
+    embedding_model: str = Field(
+        default="sentence-transformers/all-MiniLM-L6-v2", description="Local embedding model identifier"
+    )
+    embedding_cache_dir: Path = Field(
+        default_factory=lambda: Path.home() / ".cache" / "devx" / "embeddings",
+        description="Local embedding model cache directory",
+    )
+    embeddings_offline: bool = Field(default=True, description="Prevent embedding model downloads")
+
+    # Observability
+    tracing_enabled: bool = Field(default=False, description="Enable LangSmith tracing")
+    auto_context: bool = Field(default=True, description="Auto-discover project files")
+
+    # Project rules
+    permission_rules: tuple[dict[str, str], ...] = Field(default=(), description="Project permission rules")
+    policy_preset: str = Field(default="", description="Named permission preset (e.g. remote_only, deny_local_writes, strict)")
+    plugin_paths: tuple[str, ...] = Field(default=(), description="Project plugin paths")
+    mcp_servers: tuple[dict[str, Any], ...] = Field(default=(), description="MCP server configurations")
+
+    # Context compaction
+    context_compaction_enabled: bool = Field(default=True, description="Enable context compaction")
+    max_context_messages: int = Field(default=MAX_CONTEXT_MESSAGES_DEFAULT, description="Maximum context messages (fixed mode)")
+    context_priority_retention: tuple[str, int, int] = Field(
+        default=(CONTEXT_PRIORITY_CRITICAL, CONTEXT_PRIORITY_HIGH, CONTEXT_PRIORITY_NORMAL),
+        description="Priority levels and score thresholds for message retention"
+    )
+    max_context_chars: int = Field(default=24_000, description="Maximum context characters")
+    compaction_summary_chars: int = Field(default=4_000, description="Compaction summary characters")
+    diagnostic_distillation_enabled: bool = Field(
+        default=True, description="Enable diagnostic distillation"
+    )
+    diagnostic_distillation_max_chars: int = Field(
+        default=DIAGNOSTIC_DISTILLATION_MAX_CHARS_DEFAULT, description="Diagnostic distillation character limit"
+    )
+    decoupled_context_enabled: bool = Field(
+        default=True, description="Enable decoupled context"
+    )
+    remote_ssh: str = Field(default="", description="Remote SSH workspace URI")
+    ssh_key_path: str = Field(default="", description="Path to SSH private key")
+    container: str = Field(default="", description="Container workspace URI (container://name/path)")
+
+    # ── Pydantic V2 validators ──
+
+    @field_validator("max_iterations")
+    def positive_iterations(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("max_iterations must be positive")
+        return v
+
+    @field_validator("max_tool_calls")
+    def positive_tool_calls(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("max_tool_calls must be positive")
+        return v
+
+    @field_validator("max_context_messages")
+    def positive_context_messages(cls, v: int) -> int:
+        if v < CONTEXT_MIN_MESSAGES:
+            raise ValueError(f"max_context_messages must be at least {CONTEXT_MIN_MESSAGES}")
+        return v
+
+    @field_validator("max_context_chars")
+    def positive_context_chars(cls, v: int) -> int:
+        if v < CONTEXT_MIN_CHARS:
+            raise ValueError(f"max_context_chars must be at least {CONTEXT_MIN_CHARS}")
+        return v
+
+    @field_validator("compaction_summary_chars")
+    def positive_summary_chars(cls, v: int) -> int:
+        if v < CONTEXT_SUMMARY_MIN_CHARS:
+            raise ValueError(f"compaction_summary_chars must be at least {CONTEXT_SUMMARY_MIN_CHARS}")
+        return v
+
+    @field_validator("diagnostic_distillation_max_chars")
+    def positive_distillation_chars(cls, v: int) -> int:
+        if v < DIAGNOSTIC_DISTILLATION_MIN_CHARS:
+            raise ValueError(f"diagnostic_distillation_max_chars must be at least {DIAGNOSTIC_DISTILLATION_MIN_CHARS}")
+        return v
+
+    @field_validator("command_timeout")
+    def positive_timeout(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("command_timeout must be positive")
+        return v
+
+    @field_validator("max_file_bytes")
+    def positive_file_bytes(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("max_file_bytes must be positive")
+        return v
+
+    model_config = {"validate_assignment": True, "extra": "ignore"}
+
+    # ── Env var resolution ──
 
     @classmethod
-    def load(cls, *, workspace: Path | None = None) -> Settings:
+    def load(cls, *, workspace: Path | None = None) -> "Settings":
+        """Load settings with environment variable precedence.
+
+        Precedence (highest to lowest):
+        1. Environment variables ``DEVX_*`` / legacy ``DEV_*``
+        2. Workspace ``.env`` file
+        3. User global config ``~/.devx/config.env``
+        4. Non-secret project config ``.devx/config.json``
+        5. Built-in defaults
+        """
+        # ── 1. Load env files ────────────────────────────────────────────
         legacy_path = Path.home() / ".dev" / "config.env"
         config_path = Path.home() / ".devx" / "config.env"
         user_values = _load_env_file(legacy_path)
@@ -87,7 +239,11 @@ class Settings:
         )
         workspace_values = _load_env_file(workspace_hint.expanduser().resolve() / ".env")
 
-        def get(name: str, default: str, legacy_name: str | None = None) -> str:
+        def get(
+            name: str,
+            default: str,
+            legacy_name: str | None = None,
+        ) -> str:
             val = os.getenv(name)
             if val is not None:
                 return val
@@ -113,11 +269,16 @@ class Settings:
                 return False
             raise ValueError(f"{name} must be a boolean value")
 
-        root = (workspace or Path(get("DEVX_WORKSPACE", str(cwd), "DEV_WORKSPACE"))).expanduser().resolve()
+        # ── 2. Determine workspace root ──────────────────────────────────
+        root = (
+            workspace or Path(get("DEVX_WORKSPACE", str(cwd), "DEV_WORKSPACE"))
+        ).expanduser().resolve()
         if root != workspace_hint.expanduser().resolve():
             workspace_values = _load_env_file(root / ".env")
         if not root.is_dir():
             raise ValueError(f"Workspace does not exist: {root}")
+
+        # ── 3. Load project config ───────────────────────────────────────
         project = _load_project_config(root)
         raw_permissions = project.get("permissions", ())
         if not isinstance(raw_permissions, (list, tuple)):
@@ -130,76 +291,172 @@ class Settings:
             raise TypeError("Project plugins must be a list of paths")
         raw_mcp = project.get("mcp_servers", ())
         if isinstance(raw_mcp, dict):
-            raw_mcp = [dict(value, name=name) if isinstance(value, dict) else value for name, value in raw_mcp.items()]
+            raw_mcp = [
+                dict(value, name=name) if isinstance(value, dict) else value
+                for name, value in raw_mcp.items()
+            ]
         if not isinstance(raw_mcp, (list, tuple)):
             raise TypeError("Project mcp_servers must be a list or object")
         mcp_servers = tuple(item for item in raw_mcp if isinstance(item, dict))
         compaction = project.get("context_compaction", {})
         if not isinstance(compaction, dict):
             raise TypeError("context_compaction must be an object")
+
+        # ── 4. Build the Settings instance ───────────────────────────────
+        # Resolve all values with precedence, then construct the pydantic model.
+
+        def get_field(name: str, default: str, legacy_name: str | None = None) -> Any:
+            return get(name, default, legacy_name)
+
+        # Resolve boolean fields
+        approval_required = boolean("DEVX_APPROVAL_REQUIRED", True, "DEV_APPROVAL_REQUIRED")
+        embeddings_enabled = boolean("DEVX_EMBEDDINGS_ENABLED", False, "DEV_EMBEDDINGS_ENABLED")
+        embeddings_offline = boolean("DEVX_EMBEDDINGS_OFFLINE", True, "DEV_EMBEDDINGS_OFFLINE")
+        tracing_enabled = boolean("LANGSMITH_TRACING", False)
+        auto_context = boolean("DEVX_AUTO_CONTEXT", True, "DEV_AUTO_CONTEXT")
+        context_compaction_enabled = boolean(
+            "DEVX_CONTEXT_COMPACTION_ENABLED",
+            bool(compaction.get("enabled", True)),
+            "DEV_CONTEXT_COMPACTION_ENABLED",
+        )
+        diagnostic_distillation_enabled = boolean(
+            "DEVX_DIAGNOSTIC_DISTILLATION_ENABLED", True, "DEV_DIAGNOSTIC_DISTILLATION_ENABLED"
+        )
+        decoupled_context_enabled = boolean(
+            "DEVX_DECOUPLED_CONTEXT_ENABLED", True, "DEV_DECOUPLED_CONTEXT_ENABLED"
+        )
+
+        # Resolve integer fields using centralized constants
+        max_iterations = int(get("DEVX_MAX_ITERATIONS", "8", "DEV_MAX_ITERATIONS"))
+        max_tool_calls = int(get("DEVX_MAX_TOOL_CALLS", str(MAX_TOOL_CALLS_DEFAULT), "DEV_MAX_TOOL_CALLS"))
+        max_file_bytes = int(get("DEVX_MAX_FILE_BYTES", "1000000", "DEV_MAX_FILE_BYTES"))
+        max_context_files = int(get("DEVX_MAX_CONTEXT_FILES", str(MAX_CONTEXT_FILES_DEFAULT), "DEV_MAX_CONTEXT_FILES"))
+        max_context_messages = int(
+            get("DEVX_MAX_CONTEXT_MESSAGES", str(compaction.get("max_messages", MAX_CONTEXT_MESSAGES_DEFAULT)), "DEV_MAX_CONTEXT_MESSAGES")
+        )
+        max_context_chars = int(
+            get("DEVX_MAX_CONTEXT_CHARS", str(compaction.get("max_chars", 24_000)), "DEV_MAX_CONTEXT_CHARS")
+        )
+        compaction_summary_chars = int(
+            get(
+                "DEVX_COMPACTION_SUMMARY_CHARS",
+                str(compaction.get("summary_chars", DIAGNOSTIC_DISTILLATION_MAX_CHARS_DEFAULT)),
+                "DEV_COMPACTION_SUMMARY_CHARS",
+            )
+        )
+        diagnostic_distillation_max_chars = int(
+            get(
+                "DEVX_DIAGNOSTIC_DISTILLATION_MAX_CHARS",
+                str(DIAGNOSTIC_DISTILLATION_MAX_CHARS_DEFAULT),
+                "DEV_DIAGNOSTIC_DISTILLATION_MAX_CHARS",
+            )
+        )
+
+        # Resolve string fields with fallback to defaults
+        base_url = get("DEVX_BASE_URL", "http://localhost:4000/v1", "DEV_BASE_URL")
+        api_key = get("DEVX_API_KEY", "sk-placeholder", "DEV_API_KEY")
+        model = get("DEVX_MODEL", "gpt-4o", "DEV_MODEL")
+        provider = get("DEVX_PROVIDER", "openai", "DEV_PROVIDER")
+        test_command = get("DEVX_TEST_COMMAND", "", "DEV_TEST_COMMAND")
+        lint_command = get("DEVX_LINT_COMMAND", "", "DEV_LINT_COMMAND")
+        embedding_model = get(
+            "DEVX_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2", "DEV_EMBEDDING_MODEL"
+        )
+        remote_ssh = get("DEVX_REMOTE_SSH", "", "DEV_REMOTE_SSH")
+        ssh_key_path = get("DEVX_SSH_KEY", "", "DEV_SSH_KEY")
+        container = get("DEVX_CONTAINER", "", "DEV_CONTAINER")
+        policy_preset = str(
+            get("DEVX_POLICY_PRESET", str(project.get("policy_preset", "")), "DEV_POLICY_PRESET")
+        ).strip()
+
+        # Resolve project config-derived fields
+        permission_rules = tuple(item for item in raw_permissions if isinstance(item, dict))
+        plugin_paths = tuple(str(item) for item in raw_plugins)
+        mcp_servers = tuple(item for item in raw_mcp if isinstance(item, dict))
+
+        # ── 5. Validate and return ───────────────────────────────────────
+        # pydantic validators will raise on invalid values
         return cls(
-            base_url=get("DEVX_BASE_URL", cls.base_url, "DEV_BASE_URL"),
-            api_key=get("DEVX_API_KEY", cls.api_key, "DEV_API_KEY"),
-            model=get("DEVX_MODEL", cls.model, "DEV_MODEL"),
-            provider=get("DEVX_PROVIDER", cls.provider, "DEV_PROVIDER"),
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            provider=provider,
             workspace=root,
             session_db=Path(get("DEVX_SESSION_DB", str(Path.home() / ".devx" / "sessions.db"), "DEV_SESSION_DB")).expanduser(),
             cache_db=Path(get("DEVX_CACHE_DB", str(Path.home() / ".devx" / "cache.db"), "DEV_CACHE_DB")).expanduser(),
-            approval_required=boolean("DEVX_APPROVAL_REQUIRED", True, "DEV_APPROVAL_REQUIRED"),
-            max_iterations=int(get("DEVX_MAX_ITERATIONS", "8", "DEV_MAX_ITERATIONS")),
-            max_tool_calls=int(get("DEVX_MAX_TOOL_CALLS", "40", "DEV_MAX_TOOL_CALLS")),
+            approval_required=approval_required,
+            max_iterations=max_iterations,
+            max_tool_calls=max_tool_calls,
             command_timeout=float(get("DEVX_COMMAND_TIMEOUT", "120", "DEV_COMMAND_TIMEOUT")),
-            test_command=get("DEVX_TEST_COMMAND", "", "DEV_TEST_COMMAND"),
-            max_file_bytes=int(get("DEVX_MAX_FILE_BYTES", "1000000", "DEV_MAX_FILE_BYTES")),
-            max_context_files=int(get("DEVX_MAX_CONTEXT_FILES", "5", "DEV_MAX_CONTEXT_FILES")),
-            lint_command=get("DEVX_LINT_COMMAND", "", "DEV_LINT_COMMAND"),
-            embeddings_enabled=boolean("DEVX_EMBEDDINGS_ENABLED", False, "DEV_EMBEDDINGS_ENABLED"),
-            embedding_model=get("DEVX_EMBEDDING_MODEL", cls.embedding_model, "DEV_EMBEDDING_MODEL"),
-            embedding_cache_dir=Path(get(
-                "DEVX_EMBEDDING_CACHE_DIR",
-                str(Path.home() / ".cache" / "devx" / "embeddings"),
-                "DEV_EMBEDDING_CACHE_DIR",
-            )).expanduser(),
-embeddings_offline=boolean("DEVX_EMBEDDINGS_OFFLINE", True, "DEV_EMBEDDINGS_OFFLINE"),
-            auto_context=boolean("DEVX_AUTO_CONTEXT", True, "DEV_AUTO_CONTEXT"),
-            tracing_enabled=boolean("LANGSMITH_TRACING", False),
+            test_command=test_command,
+            max_file_bytes=max_file_bytes,
+            max_context_files=max_context_files,
+            lint_command=lint_command,
+            embeddings_enabled=embeddings_enabled,
+            embedding_model=embedding_model,
+            embedding_cache_dir=Path(
+                get(
+                    "DEVX_EMBEDDING_CACHE_DIR",
+                    str(Path.home() / ".cache" / "devx" / "embeddings"),
+                    "DEV_EMBEDDING_CACHE_DIR",
+                )
+            ).expanduser(),
+            embeddings_offline=embeddings_offline,
+            tracing_enabled=tracing_enabled,
+            auto_context=auto_context,
             permission_rules=permission_rules,
-            plugin_paths=tuple(str(item) for item in raw_plugins),
+            policy_preset=policy_preset,
+            plugin_paths=plugin_paths,
             mcp_servers=mcp_servers,
-            context_compaction_enabled=boolean(
-                "DEVX_CONTEXT_COMPACTION_ENABLED",
-                bool(compaction.get("enabled", True)),
-                "DEV_CONTEXT_COMPACTION_ENABLED",
-            ),
-            max_context_messages=int(get(
-                "DEVX_MAX_CONTEXT_MESSAGES", str(compaction.get("max_messages", 24)), "DEV_MAX_CONTEXT_MESSAGES"
-            )),
-            max_context_chars=int(get(
-                "DEVX_MAX_CONTEXT_CHARS", str(compaction.get("max_chars", 24_000)), "DEV_MAX_CONTEXT_CHARS"
-            )),
-            compaction_summary_chars=int(get(
-                "DEVX_COMPACTION_SUMMARY_CHARS", str(compaction.get("summary_chars", 4_000)),
-                "DEV_COMPACTION_SUMMARY_CHARS"
-            )),
-            diagnostic_distillation_enabled=boolean(
-                "DEVX_DIAGNOSTIC_DISTILLATION_ENABLED", True, "DEV_DIAGNOSTIC_DISTILLATION_ENABLED"
-            ),
-            diagnostic_distillation_max_chars=int(get(
-                "DEVX_DIAGNOSTIC_DISTILLATION_MAX_CHARS", "4000", "DEV_DIAGNOSTIC_DISTILLATION_MAX_CHARS"
-            )),
-            decoupled_context_enabled=boolean(
-                "DEVX_DECOUPLED_CONTEXT_ENABLED", True, "DEV_DECOUPLED_CONTEXT_ENABLED"
-            ),
-            remote_ssh=get("DEVX_REMOTE_SSH", "", "DEV_REMOTE_SSH"),
-            ssh_key_path=get("DEVX_SSH_KEY", "", "DEV_SSH_KEY"),
+            context_compaction_enabled=context_compaction_enabled,
+            max_context_messages=max_context_messages,
+            max_context_chars=max_context_chars,
+            compaction_summary_chars=compaction_summary_chars,
+            diagnostic_distillation_enabled=diagnostic_distillation_enabled,
+            diagnostic_distillation_max_chars=diagnostic_distillation_max_chars,
+            decoupled_context_enabled=decoupled_context_enabled,
+            remote_ssh=remote_ssh,
+            ssh_key_path=ssh_key_path,
+            container=container,
         )
 
+    # ── Validation ────────────────────────────────────────────────────
+
     def validate(self) -> None:
+        """Validate cross-field limits.
+
+        Kept for backwards compatibility with the previous dataclass API.
+        Pydantic already validates individual fields at construction time; this
+        adds the cross-field checks callers relied on.
+        """
         if self.max_iterations < 1 or self.max_tool_calls < 1 or self.max_context_files < 1:
             raise ValueError("Iteration, tool-call, and context-file limits must be positive")
-        if self.max_context_messages < 2 or self.max_context_chars < 256 or self.compaction_summary_chars < 128:
+        if (
+            self.max_context_messages < CONTEXT_MIN_MESSAGES
+            or self.max_context_chars < CONTEXT_MIN_CHARS
+            or self.compaction_summary_chars < CONTEXT_SUMMARY_MIN_CHARS
+        ):
             raise ValueError("Context compaction limits are too small")
-        if self.diagnostic_distillation_max_chars < 100:
+        if self.diagnostic_distillation_max_chars < DIAGNOSTIC_DISTILLATION_MIN_CHARS:
             raise ValueError("Diagnostic distillation character limit is too small")
         if self.command_timeout <= 0 or self.max_file_bytes <= 0:
             raise ValueError("Timeout and file-size limits must be positive")
+        if self.policy_preset:
+            from devx.harness.permissions import POLICY_PRESETS
+
+            if self.policy_preset not in POLICY_PRESETS:
+                raise ValueError(
+                    f"Unknown policy preset {self.policy_preset!r}; "
+                    f"choose from {', '.join(sorted(POLICY_PRESETS))}"
+                )
+
+    # ── Convenience accessor ──────────────────────────────────────────
+
+    def get(self, name: str, default: Any = None) -> Any:
+        """Get a setting by name, for backwards compatibility."""
+        return getattr(self, name, default)
+
+
+# ── Backwards-compatibility alias ─────────────────────────────────────
+
+DevState = Settings  # type: ignore[assignment]

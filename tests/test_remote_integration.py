@@ -1,14 +1,13 @@
 import asyncio
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
 from typer.testing import CliRunner
 
 from devx.cli.app import app
 from devx.config import Settings
 from devx.harness.approval import ApprovalManager
-from devx.harness.ssh_backend import SshConfig, SshWorkspaceBackend
+from devx.harness.ssh_backend import SshWorkspaceBackend
 from devx.tui.app import DevTUI
 from textual.widgets import Static
 
@@ -142,6 +141,73 @@ def test_supervisor_graph_initializes_ssh_backend(tmp_path: Path, monkeypatch):
     assert cfg.username == "deploy"
     assert cfg.key_filename == "/keys/prod.pem"
     assert cfg.remote_path == "/srv/app"
+
+
+def test_supervisor_graph_initializes_container_backend(tmp_path: Path, monkeypatch):
+    from devx.agents.langgraph_supervisor import build_langgraph_supervisor
+    from devx.harness.container_backend import ContainerWorkspaceBackend
+
+    settings = Settings(
+        container="container://api-box/app",
+        workspace=tmp_path,
+        session_db=tmp_path / "sessions.db",
+    )
+
+    mock_backend = MagicMock(spec=ContainerWorkspaceBackend)
+    mock_backend.is_remote = True
+    mock_backend.root = "/app"
+    instantiated_cfgs = []
+
+    def fake_container_backend_init(cfg):
+        instantiated_cfgs.append(cfg)
+        return mock_backend
+
+    monkeypatch.setattr(
+        "devx.harness.container_backend.ContainerWorkspaceBackend", fake_container_backend_init
+    )
+
+    approvals = ApprovalManager(lambda req: True)
+    compiled = build_langgraph_supervisor(
+        settings=settings,
+        approvals=approvals,
+        files=[],
+        run_id="run-test-container",
+        session_id="session-test-container",
+        plan_only=True,
+    )
+
+    assert compiled is not None
+    assert len(instantiated_cfgs) == 1
+    assert instantiated_cfgs[0].container == "api-box"
+    assert instantiated_cfgs[0].remote_path == "/app"
+
+
+def test_cli_ask_passes_container_option(monkeypatch, tmp_path: Path):
+    runner = CliRunner()
+    captured_settings = []
+
+    def fake_build_supervisor_graph(settings, approvals, files, run_id, session_id, plan_only):
+        captured_settings.append(settings)
+        mock_graph = MagicMock()
+        mock_graph.invoke.return_value = {
+            "status": "completed",
+            "result": "task completed",
+            "plan": "sample plan",
+            "messages": [],
+            "iteration": 1,
+        }
+        return mock_graph
+
+    monkeypatch.setattr("devx.agents.graph.build_supervisor_graph", fake_build_supervisor_graph)
+
+    result = runner.invoke(
+        app,
+        ["ask", "check codebase", "--container", "container://api-box/app", "--plan-only"],
+    )
+
+    assert result.exit_code == 0
+    assert len(captured_settings) == 1
+    assert captured_settings[0].container == "container://api-box/app"
 
 
 def test_tui_slash_remote_connect_and_disconnect(tmp_path: Path, monkeypatch):

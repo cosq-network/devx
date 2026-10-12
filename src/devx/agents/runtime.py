@@ -40,11 +40,7 @@ def build_tool_registry(
     if not load_extensions:
         return registry
 
-    policy = PermissionPolicy(
-        settings.workspace,
-        getattr(settings, "approval_required", True),
-        getattr(settings, "permission_rules", ()),
-    )
+    policy = PermissionPolicy.from_settings(settings)
 
     def authorize(action: str, target: str, reason: str) -> None:
         effect = policy.effect(action, target)
@@ -155,7 +151,8 @@ def build_coding_agent(
         """Write a file after the user approves the exact path."""
         consume_tool_call()
         preview = tools.preview_write(path, content)
-        if tools.requires_approval("edit", path) and not allowed("write", path, "Proposed diff:\n" + preview):
+        requires_approval, _ = tools.check_approval("edit", path)
+        if requires_approval and not allowed("write", path, "Proposed diff:\n" + preview):
             tools.cancellation.raise_if_cancelled()
             return "WRITE DENIED: request user approval before changing this file."
         return tools.write(path, content, approved=True).output
@@ -165,7 +162,8 @@ def build_coding_agent(
         """Apply one exact replacement, refusing ambiguous or concurrently changed files."""
         consume_tool_call()
         preview = tools.preview_replace(path, old_text, new_text)
-        if tools.requires_approval("edit", path) and not allowed("write", path, "Proposed diff:\n" + preview):
+        requires_approval, _ = tools.check_approval("edit", path)
+        if requires_approval and not allowed("write", path, "Proposed diff:\n" + preview):
             tools.cancellation.raise_if_cancelled()
             return "PATCH DENIED: request user approval before changing this file."
         return tools.replace(path, old_text, new_text, expected_hash=expected_hash or None, approved=True).output
@@ -174,7 +172,8 @@ def build_coding_agent(
     def run_command(command: str) -> str:
         """Run a project command after explicit user approval."""
         consume_tool_call()
-        if tools.requires_approval("shell", command) and not allowed("command", command, "The agent requested this project command."):
+        requires_approval, _ = tools.check_approval("shell", command)
+        if requires_approval and not allowed("command", command, "The agent requested this project command."):
             tools.cancellation.raise_if_cancelled()
             return "COMMAND DENIED: request user approval before executing this command."
         return tools.run(command, approved=True).output
@@ -191,7 +190,8 @@ def build_coding_agent(
                 results.append("ERROR: missing path in operation")
                 continue
             preview = tools.preview_write(path, content)
-            if tools.requires_approval("edit", path) and not allowed("write", path, "Proposed diff:\n" + preview):
+            requires_approval, _ = tools.check_approval("edit", path)
+            if requires_approval and not allowed("write", path, "Proposed diff:\n" + preview):
                 tools.cancellation.raise_if_cancelled()
                 results.append(f"WRITE DENIED: {path}")
                 continue
@@ -203,7 +203,8 @@ def build_coding_agent(
     def git_branch(name: str) -> str:
         """Create and switch to a new git branch."""
         consume_tool_call()
-        if tools.requires_approval("shell", f"git checkout -b {name}") and not allowed("command", f"git checkout -b {name}", "Create new git branch"):
+        requires_approval, _ = tools.check_approval("shell", f"git checkout -b {name}")
+        if requires_approval and not allowed("command", f"git checkout -b {name}", "Create new git branch"):
             tools.cancellation.raise_if_cancelled()
             return "GIT BRANCH DENIED: request user approval before creating branch."
         return tools.run(["git", "checkout", "-b", name], approved=True).output
@@ -219,7 +220,8 @@ def build_coding_agent(
         results = []
         for cmd in cmds:
             cmd_str = " ".join(cmd)
-            if tools.requires_approval("shell", cmd_str) and not allowed("command", cmd_str, "Git commit"):
+            requires_approval, _ = tools.check_approval("shell", cmd_str)
+            if requires_approval and not allowed("command", cmd_str, "Git commit"):
                 tools.cancellation.raise_if_cancelled()
                 return "GIT COMMIT DENIED: request user approval before committing."
             result = tools.run(cmd, approved=True)
@@ -234,7 +236,8 @@ def build_coding_agent(
         if branch:
             cmd.append(branch)
         cmd_str = " ".join(cmd)
-        if tools.requires_approval("shell", cmd_str) and not allowed("command", cmd_str, "Git push"):
+        requires_approval, _ = tools.check_approval("shell", cmd_str)
+        if requires_approval and not allowed("command", cmd_str, "Git push"):
             tools.cancellation.raise_if_cancelled()
             return "GIT PUSH DENIED: request user approval before pushing."
         return tools.run(cmd, approved=True).output
@@ -245,7 +248,8 @@ def build_coding_agent(
         consume_tool_call()
         cmd = ["gh", "pr", "create", "--title", title, "--body", body, "--base", base]
         cmd_str = " ".join(cmd)
-        if tools.requires_approval("shell", cmd_str) and not allowed("command", cmd_str, "Create GitHub PR"):
+        requires_approval, _ = tools.check_approval("shell", cmd_str)
+        if requires_approval and not allowed("command", cmd_str, "Create GitHub PR"):
             tools.cancellation.raise_if_cancelled()
             return "GH PR CREATE DENIED: request user approval before creating PR."
         return tools.run(cmd, approved=True).output

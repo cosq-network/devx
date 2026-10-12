@@ -28,6 +28,7 @@ COMMAND_SUGGESTIONS = (
     "/api-key set",
     "/config show",
     "/config reload",
+    "/config reset",
     "/session",
     "/session use",
     "/session rename",

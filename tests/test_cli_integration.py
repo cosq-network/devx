@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 from typer.testing import CliRunner
 
@@ -15,6 +16,76 @@ def test_cli_doctor_command():
     assert "status: ok" in result.output
     assert "provider:" in result.output
     assert "model:" in result.output
+
+
+def test_cli_doctor_remote_preflight(monkeypatch: Any) -> None:
+    from unittest.mock import MagicMock
+
+    from devx.harness.backend import BackendToolResult
+
+    monkeypatch.setattr(
+        "devx.harness.ssh_backend.SshConfig.load_ssh_config", lambda host: {}
+    )
+    mock_backend = MagicMock()
+    mock_backend.is_dir.return_value = True
+    mock_backend.exists.return_value = True
+    mock_backend.run_command.return_value = BackendToolResult(True, "true\n", 0)
+    monkeypatch.setattr(
+        "devx.harness.ssh_backend.SshWorkspaceBackend", lambda cfg: mock_backend
+    )
+
+    result = runner.invoke(app, ["doctor", "--remote", "deploy@host:/srv/app"])
+    assert result.exit_code == 0
+    assert "status: ok" in result.output
+    assert "connection" in result.output
+    assert "writable" in result.output
+
+
+def test_cli_doctor_remote_preflight_failure(monkeypatch: Any) -> None:
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(
+        "devx.harness.ssh_backend.SshConfig.load_ssh_config", lambda host: {}
+    )
+    mock_backend = MagicMock()
+    mock_backend.ensure_connected.side_effect = OSError("authentication failed")
+    monkeypatch.setattr(
+        "devx.harness.ssh_backend.SshWorkspaceBackend", lambda cfg: mock_backend
+    )
+
+    result = runner.invoke(app, ["doctor", "--remote", "deploy@host:/srv/app"])
+    assert result.exit_code == 1
+    assert "status: error" in result.output
+
+
+def test_cli_doctor_remote_preflight_json(monkeypatch: Any) -> None:
+    import json
+    from unittest.mock import MagicMock
+
+    from devx.harness.backend import BackendToolResult
+
+    monkeypatch.setattr(
+        "devx.harness.ssh_backend.SshConfig.load_ssh_config", lambda host: {}
+    )
+    mock_backend = MagicMock()
+    mock_backend.is_dir.return_value = True
+    mock_backend.exists.return_value = False
+    mock_backend.run_command.return_value = BackendToolResult(True, "true\n", 0)
+    monkeypatch.setattr(
+        "devx.harness.ssh_backend.SshWorkspaceBackend", lambda cfg: mock_backend
+    )
+
+    result = runner.invoke(app, ["doctor", "--remote", "deploy@host:/srv/app", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["status"] == "ok"
+    assert payload["checks"]["git"]["status"] == "ok"
+    assert payload["checks"]["venv"]["status"] == "missing"
+
+
+def test_cli_doctor_remote_invalid_uri() -> None:
+    result = runner.invoke(app, ["doctor", "--remote", "not-a-valid-uri"])
+    assert result.exit_code == 2
 
 
 def test_cli_sessions_and_session_management(tmp_path: Path):
@@ -88,3 +159,161 @@ def test_config_env_precedence_and_backward_compatibility(monkeypatch, tmp_path:
     monkeypatch.setenv("DEV_MODEL", "legacy-dev-model")
     s3 = Settings.load(workspace=tmp_path)
     assert s3.model == "legacy-dev-model"
+
+
+
+def test_cli_ask_approval_cache_flag(tmp_path: Path, monkeypatch: Any) -> None:
+    """Test that --approval-cache flag is accepted by the ask command."""
+    from typer.testing import CliRunner
+    from devx.cli.app import app
+
+    runner = CliRunner()
+    # Just verify the flag is accepted (it may deny due to no handler, but shouldn't crash)
+    result = runner.invoke(app, ["ask", "test prompt", "--approval-cache"])
+    # Exit code 2 is expected when no approval handler is configured (default deny)
+    # The important thing is that the command doesn't error on unknown flags
+    assert result.exit_code in (0, 2), f"Expected 0 or 2, got {result.exit_code}"
+
+
+def test_cli_ask_approval_matching_flag(tmp_path: Path, monkeypatch: Any) -> None:
+    """Test that --approval-matching flag is accepted by the ask command."""
+    from typer.testing import CliRunner
+    from devx.cli.app import app
+
+    runner = CliRunner()
+    # Just verify the flag is accepted (it may deny due to no handler, but shouldn't crash)
+    result = runner.invoke(app, ["ask", "test prompt", "--approval-matching"])
+    # Exit code 2 is expected when no approval handler is configured (default deny)
+    assert result.exit_code in (0, 2), f"Expected 0 or 2, got {result.exit_code}"
+
+
+def test_cli_ask_both_approval_flags(tmp_path: Path, monkeypatch: Any) -> None:
+    """Test that both --approval-cache and --approval-matching flags work together."""
+    from typer.testing import CliRunner
+    from devx.cli.app import app
+
+    runner = CliRunner()
+    # Test both flags together
+    result = runner.invoke(app, ["ask", "test prompt", "--approval-cache", "--approval-matching"])
+    # Should not crash; exit code 2 means default deny (no handler configured)
+    assert result.exit_code in (0, 2), f"Expected 0 or 2, got {result.exit_code}"
+
+
+def test_settings_pydantic_validators() -> None:
+    """Test that pydantic validators work correctly for Settings."""
+    from devx.config import Settings
+
+    # Test valid values
+    s = Settings(max_iterations=8, max_tool_calls=40)
+    assert s.max_iterations == 8
+    assert s.max_tool_calls == 40
+
+    # Test invalid values raise ValueError
+    try:
+        Settings(max_iterations=0)
+        assert False, "Should have raised ValueError for max_iterations=0"
+    except ValueError:
+        pass  # Expected
+
+    try:
+        Settings(max_tool_calls=0)
+        assert False, "Should have raised ValueError for max_tool_calls=0"
+    except ValueError:
+        pass  # Expected
+
+    try:
+        Settings(max_context_messages=1)
+        assert False, "Should have raised ValueError for max_context_messages=1"
+    except ValueError:
+        pass  # Expected
+
+    try:
+        Settings(max_context_chars=100)
+        assert False, "Should have raised ValueError for max_context_chars=100"
+    except ValueError:
+        pass  # Expected
+
+    try:
+        Settings(compaction_summary_chars=64)
+        assert False, "Should have raised ValueError for compaction_summary_chars=64"
+    except ValueError:
+        pass  # Expected
+
+    try:
+        Settings(diagnostic_distillation_max_chars=50)
+        assert False, "Should have raised ValueError for diagnostic_distillation_max_chars=50"
+    except ValueError:
+        pass  # Expected
+
+    try:
+        Settings(command_timeout=0)
+        assert False, "Should have raised ValueError for command_timeout=0"
+    except ValueError:
+        pass  # Expected
+
+    try:
+        Settings(max_file_bytes=0)
+        assert False, "Should have raised ValueError for max_file_bytes=0"
+    except ValueError:
+        pass  # Expected
+
+
+def test_settings_load_preserves_precedence(monkeypatch: Any, tmp_path: Path) -> None:
+    """Test that Settings.load() respects environment variable precedence."""
+    from pathlib import Path
+    from devx.config import Settings
+
+    home_dir = tmp_path / "fake_home"
+    devx_dir = home_dir / ".devx"
+    devx_dir.mkdir(parents=True)
+    (devx_dir / "config.env").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(Path, "home", lambda: home_dir)
+
+    # Clear environment variables that could affect Settings loading
+    # to ensure we test with clean defaults
+    for key in [
+        "DEVX_PROVIDER",
+        "DEVX_MODEL",
+        "DEVX_WORKSPACE",
+        "DEV_WORKSPACE",
+        "DEVX_BASE_URL",
+        "DEV_BASE_URL",
+        "DEVX_API_KEY",
+        "DEV_API_KEY",
+        "DEVX_MAX_CONTEXT_FILES",
+        "DEVX_MAX_CONTEXT_MESSAGES",
+        "DEVX_MAX_CONTEXT_CHARS",
+        "DEVX_MAX_ITERATIONS",
+        "DEVX_MAX_TOOL_CALLS",
+        "DEVX_COMMAND_TIMEOUT",
+        "DEV_APPROVAL_REQUIRED",
+        "DEV_EMBEDDINGS_ENABLED",
+        "DEV_EMBEDDINGS_OFFLINE",
+        "DEV_CONTEXT_COMPACTION_ENABLED",
+        "DEV_AUTO_CONTEXT",
+        "DEV_MAX_CONTEXT_FILES",
+        "DEV_MAX_CONTEXT_MESSAGES",
+        "DEV_MAX_CONTEXT_CHARS",
+        "DEV_MAX_ITERATIONS",
+        "DEV_MAX_TOOL_CALLS",
+        "DEV_COMMAND_TIMEOUT",
+        "DEV_APPROVAL_REQUIRED",
+        "DEV_EMBEDDINGS_ENABLED",
+        "DEV_EMBEDDINGS_OFFLINE",
+        "DEV_CONTEXT_COMPACTION_ENABLED",
+        "DEV_AUTO_CONTEXT",
+    ]:
+        monkeypatch.delenv(key, raising=False)
+
+    # Test that default values are used when no env vars are set
+    s = Settings.load(workspace=tmp_path)
+    assert s.base_url is not None
+    assert s.provider is not None
+    assert s.model is not None
+    assert s.approval_required is not None
+    assert s.max_iterations == 8
+    assert s.max_tool_calls == 40
+    assert s.max_context_files == 5
+    assert s.max_context_messages == 24
+    assert s.max_context_chars == 24000

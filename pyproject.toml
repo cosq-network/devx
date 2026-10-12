@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "devx-coding-agent"
 version = "0.2.0-dev.0"
 description = "A local-first, approval-gated AI coding agent."
+license = "Apache-2.0"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["typer>=0.12", "textual>=0.70"]
@@ -41,4 +42,4 @@ target-version = "py311"
 
 [tool.pyright]
 include = ["src", "tests"]
-typeCheckingMode = "basic"
+typeCheckingMode = "strict"

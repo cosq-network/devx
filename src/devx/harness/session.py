@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from devx.harness.knowledge_graph import KnowledgeGraph as _KnowledgeGraph
+
 
 class SessionStore:
     def __init__(self, db_path: Path | None = None):
@@ -33,6 +35,12 @@ class SessionStore:
                 error TEXT NOT NULL, state TEXT NOT NULL, metadata TEXT NOT NULL,
                 retry_count INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 last_retry_at TEXT)""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS token_usage (
+                id INTEGER PRIMARY KEY, session_id TEXT, run_id TEXT NOT NULL,
+                model TEXT NOT NULL, provider TEXT NOT NULL,
+                prompt_tokens INTEGER NOT NULL, completion_tokens INTEGER NOT NULL,
+                total_tokens INTEGER NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=10)
@@ -189,3 +197,113 @@ class SessionStore:
         """Remove a DLQ entry after successful retry or manual cleanup."""
         with self._connect() as conn:
             return conn.execute("DELETE FROM dead_letter_queue WHERE id=?", (dlq_id,)).rowcount > 0
+
+    # Token usage / cost accounting methods
+    def record_usage(
+        self,
+        session_id: str | None,
+        run_id: str,
+        entries: list[Any],
+    ) -> int:
+        """Persist one or more token-usage entries for cost reporting.
+
+        ``entries`` may be objects exposing ``model``, ``provider``,
+        ``prompt_tokens``, ``completion_tokens`` and ``total_tokens`` (the
+        ``TokenUsage`` dataclass) or equivalent mappings.
+        """
+        def _field(item: Any, name: str, default: Any = 0) -> Any:
+            if isinstance(item, dict):
+                return item.get(name, default)
+            return getattr(item, name, default)
+
+        rows = [
+            (
+                session_id,
+                run_id,
+                str(_field(entry, "model", "")),
+                str(_field(entry, "provider", "")),
+                int(_field(entry, "prompt_tokens", 0)),
+                int(_field(entry, "completion_tokens", 0)),
+                int(_field(entry, "total_tokens", 0)),
+            )
+            for entry in entries
+        ]
+        if not rows:
+            return 0
+        with self._connect() as conn:
+            conn.executemany(
+                """INSERT INTO token_usage(
+                       session_id, run_id, model, provider,
+                       prompt_tokens, completion_tokens, total_tokens)
+                   VALUES(?,?,?,?,?,?,?)""",
+                rows,
+            )
+        return len(rows)
+
+    def aggregate_usage(self, session_id: str | None = None) -> dict[str, Any]:
+        """Aggregate recorded token usage and estimate USD cost.
+
+        Cost is the sum of priced models; ``unpriced_models`` lists identifiers
+        with no configured price so the estimate is never silently misleading.
+        """
+        from devx.pricing import estimate_cost
+
+        query = (
+            "SELECT model, provider, COUNT(*), SUM(prompt_tokens), "
+            "SUM(completion_tokens), SUM(total_tokens) FROM token_usage"
+        )
+        args: tuple[Any, ...] = ()
+        if session_id:
+            query += " WHERE session_id=?"
+            args = (session_id,)
+        query += " GROUP BY model, provider ORDER BY SUM(total_tokens) DESC"
+        with self._connect() as conn:
+            rows = conn.execute(query, args).fetchall()
+
+        by_model: list[dict[str, Any]] = []
+        total_prompt = total_completion = total_tokens = total_calls = 0
+        total_cost = 0.0
+        unpriced: list[str] = []
+        for row in rows:
+            model, provider, calls, prompt, completion, total = (
+                row[0], row[1], row[2] or 0, row[3] or 0, row[4] or 0, row[5] or 0,
+            )
+            cost = estimate_cost(model, prompt, completion)
+            if cost is None:
+                unpriced.append(model)
+            else:
+                total_cost += cost
+            by_model.append(
+                {
+                    "model": model,
+                    "provider": provider,
+                    "calls": calls,
+                    "prompt_tokens": prompt,
+                    "completion_tokens": completion,
+                    "total_tokens": total,
+                    "estimated_cost_usd": cost,
+                }
+            )
+            total_calls += calls
+            total_prompt += prompt
+            total_completion += completion
+            total_tokens += total
+
+        return {
+            "calls": total_calls,
+            "prompt_tokens": total_prompt,
+            "completion_tokens": total_completion,
+            "total_tokens": total_tokens,
+            "estimated_cost_usd": total_cost,
+            "unpriced_models": unpriced,
+            "by_model": by_model,
+        }
+
+
+def _kg(self) -> _KnowledgeGraph:
+    """Knowledge graph for cross-session context and task history."""
+    if not hasattr(self, "_kg_instance"):
+        self._kg_instance = _KnowledgeGraph()
+    return self._kg_instance
+
+SessionStore.kg = property(_kg)

@@ -424,6 +424,7 @@ class TokenUsageTracker:
     
     def __init__(self):
         self._usage: list[TokenUsage] = []
+        self._reported = 0
         self._lock = threading.Lock()
     
     def record(self, usage: TokenUsage) -> None:
@@ -466,6 +467,17 @@ class TokenUsageTracker:
         """Get recent token usage entries."""
         with self._lock:
             return self._usage[-limit:]
+
+    def drain(self) -> list[TokenUsage]:
+        """Return usage recorded since the last drain, without clearing history.
+
+        Callers (for example the CLI after a run) can persist exactly the entries
+        they haven't reported yet, while :meth:`get_stats` keeps full history.
+        """
+        with self._lock:
+            items = self._usage[self._reported:]
+            self._reported = len(self._usage)
+            return list(items)
     
     def clear(self) -> None:
         """Clear all recorded usage."""

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 
 from devx.token_optim.distillation import distill_test_output
 

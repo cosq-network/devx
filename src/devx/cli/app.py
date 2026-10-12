@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import uuid
 from pathlib import Path
 
@@ -36,6 +37,18 @@ if typer is not None:
             raise typer.BadParameter("Install the TUI extra: pip install 'devx-coding-agent[tui]'")  # type: ignore[attr-defined]
         DevTUI(session_id=session).run()
 
+    def _workspace_backend(remote: str | None, container: str | None):
+        """Build an optional remote/container backend from CLI flags."""
+        if remote:
+            from devx.harness.ssh_backend import SshConfig, SshWorkspaceBackend
+
+            return SshWorkspaceBackend(SshConfig.from_uri(remote))
+        if container:
+            from devx.harness.container_backend import ContainerConfig, ContainerWorkspaceBackend
+
+            return ContainerWorkspaceBackend(ContainerConfig.from_uri(container))
+        return None
+
     @app.callback(invoke_without_command=True)
     def default_command(ctx: typer.Context) -> None:  # type: ignore[valid-type]
         """Start the TUI when no explicit CLI command is supplied."""
@@ -53,18 +66,32 @@ if typer is not None:
         plan_first: bool = typer.Option(True, "--plan-first/--no-plan-first"),  # type: ignore[attr-defined]
         remote: str | None = typer.Option(None, "--remote", "-r", help="Remote SSH workspace URI (ssh://user@host:port/path)"),  # type: ignore[attr-defined]
         ssh_key: str | None = typer.Option(None, "--ssh-key", help="Path to SSH private key"),  # type: ignore[attr-defined]
+        container: str | None = typer.Option(None, "--container", help="Container workspace URI (container://name/path)"),  # type: ignore[attr-defined]
+        approval_cache: bool = typer.Option(False, "--approval-cache", help="Reuse approval decisions within this run"),  # type: ignore[attr-defined]
+        approval_matching: bool = typer.Option(False, "--approval-matching", help="Auto-approve actions matching project permission rules"),  # type: ignore[attr-defined]
     ):
         """Run a single coding-agent query."""
         from devx.agents.graph import DevState, build_supervisor_graph
         from devx.completion.parser import parse_file_mentions
-        from devx.harness.approval import ApprovalManager, ApprovalRequest
+        from devx.harness.approval import ApprovalManager, ApprovalRequest, matches_allow_rule
         configure_logging(json_output=json_logs)
         settings = Settings.load()
         if remote:
             object.__setattr__(settings, "remote_ssh", remote)
         if ssh_key:
             object.__setattr__(settings, "ssh_key_path", ssh_key)
+        if container:
+            object.__setattr__(settings, "container", container)
         settings.validate()
+        # ``--approval-cache``/``--approval-matching`` only help when an approval
+        # decision can actually be obtained. Without an interactive terminal and
+        # without ``--approve-all`` we cannot ask, so fail closed (exit code 2).
+        if (approval_cache or approval_matching) and not approve and not sys.stdin.isatty():
+            raise typer.BadParameter(  # type: ignore[attr-defined]
+                "Approval required but no interactive terminal is available. "
+                "Use --approve-all, run interactively, or configure project permission rules "
+                "and pass --approval-matching."
+            )
         configure_tracing(settings)
         backend = None
         if getattr(settings, "remote_ssh", ""):
@@ -81,6 +108,9 @@ if typer is not None:
                     proxy_command=ssh_cfg.proxy_command,
                 )
             backend = SshWorkspaceBackend(ssh_cfg)
+        elif getattr(settings, "container", ""):
+            from devx.harness.container_backend import ContainerConfig, ContainerWorkspaceBackend
+            backend = ContainerWorkspaceBackend(ContainerConfig.from_uri(settings.container))
         cleaned, files, missing = parse_file_mentions(prompt, settings.workspace, backend=backend)
         if missing:
             if backend:
@@ -98,11 +128,21 @@ if typer is not None:
             state.events = prior_state.get("events", [])
             state.iteration = prior_state.get("iteration", 0)
 
+        decision_cache: dict[tuple[str, str], bool] = {}
+
         def ask_approval(request: ApprovalRequest) -> bool:
             if approve:
                 return True
+            if approval_matching and matches_allow_rule(settings.permission_rules, request.action, request.target):
+                return True
+            cache_key = (request.action, request.target)
+            if approval_cache and cache_key in decision_cache:
+                return decision_cache[cache_key]
             typer.echo(f"\nRequested action: {request.action}\nTarget: {request.target}\n{request.reason}")  # type: ignore[attr-defined]
-            return typer.confirm("Approve this action?", default=False)  # type: ignore[attr-defined]
+            decision = typer.confirm("Approve this action?", default=False)  # type: ignore[attr-defined]
+            if approval_cache:
+                decision_cache[cache_key] = decision
+            return decision
 
         run_id = str(uuid.uuid4())
         try:
@@ -172,6 +212,15 @@ if typer is not None:
                     backend.close()
                 except Exception:
                     pass
+        # Persist token usage so ``devx usage`` can report tokens and USD cost.
+        try:
+            from devx.llm import get_token_tracker
+
+            usage_entries = get_token_tracker().drain()
+            if usage_entries:
+                store.record_usage(previous["id"] if previous else session, run_id, usage_entries)
+        except Exception:
+            pass
         if session:
             store.save(previous["id"] if previous else None, session, result, {"last_run_id": run_id})
         print(json.dumps(result) if json_output else result["result"])
@@ -236,8 +285,47 @@ if typer is not None:
     @app.command()
     def doctor(
         json_output: bool = typer.Option(False, "--json"),  # type: ignore[attr-defined]
+        remote: str | None = typer.Option(None, "--remote", "-r", help="Remote SSH workspace URI to preflight (e.g. user@host:/path)"),  # type: ignore[attr-defined]
+        ssh_key: str | None = typer.Option(None, "--ssh-key", help="Path to SSH private key for the remote preflight"),  # type: ignore[attr-defined]
     ):
-        """Check local configuration and optional dependencies."""
+        """Check local configuration and optional dependencies.
+
+        With ``--remote``, validates a remote SSH workspace instead: connection
+        and authentication, the remote path, writability, git, and virtualenv.
+        """
+        if remote:
+            from devx.harness.ssh_backend import SshConfig, preflight_remote
+
+            try:
+                ssh_cfg = SshConfig.from_uri(remote)
+            except ValueError as exc:
+                raise typer.BadParameter(f"Invalid remote URI: {exc}") from exc  # type: ignore[attr-defined]
+            if ssh_key:
+                ssh_cfg = SshConfig(
+                    host=ssh_cfg.host,
+                    username=ssh_cfg.username,
+                    port=ssh_cfg.port,
+                    password=ssh_cfg.password,
+                    key_filename=ssh_key,
+                    remote_path=ssh_cfg.remote_path,
+                    proxy_command=ssh_cfg.proxy_command,
+                )
+            report = preflight_remote(ssh_cfg)
+            if json_output:
+                print(json.dumps(report))
+            else:
+                print(f"remote: {report['username']}@{report['remote']}:{report['path']}")
+                for name, check in report["checks"].items():
+                    icon = {"ok": "✓", "missing": "⚠", "error": "✗", "skipped": "–"}.get(check.get("status"), "?")
+                    line = f"  {icon} {name}: {check.get('status')}"
+                    if check.get("detail"):
+                        line += f" ({check['detail']})"
+                    print(line)
+                print(f"status: {report['status']}")
+            if report["status"] != "ok":
+                raise typer.Exit(1)
+            return
+
         settings = Settings.load()
         settings.validate()
         optional = {}
@@ -542,3 +630,188 @@ if typer is not None:
             typer.echo(json.dumps(metrics_data, indent=2))
         else:
             raise typer.BadParameter("Format must be 'prometheus' or 'json'")  # type: ignore[attr-defined]
+
+    @app.command()
+    def usage(
+        session: str | None = typer.Option(None, "--session", "-s", help="Limit to a single session id or name"),
+        json_output: bool = typer.Option(False, "--json"),  # type: ignore[attr-defined]
+    ):
+        """Show recorded token usage and estimated USD cost."""
+        from devx.pricing import format_cost
+
+        settings = Settings.load()
+        store = SessionStore(settings.session_db)
+        session_id = None
+        if session:
+            loaded = store.load(session)
+            session_id = loaded["id"] if loaded else session
+        report = store.aggregate_usage(session_id)
+
+        if json_output:
+            print(json.dumps(report))
+            return
+
+        print(f"calls: {report['calls']}")
+        print(
+            f"tokens: input={report['prompt_tokens']} "
+            f"output={report['completion_tokens']} total={report['total_tokens']}"
+        )
+        print(f"estimated cost: {format_cost(report['estimated_cost_usd'])}")
+        if report["by_model"]:
+            print("by model:")
+            for item in report["by_model"]:
+                cost = format_cost(item["estimated_cost_usd"])
+                print(
+                    f"  {item['provider']}:{item['model']}  calls={item['calls']} "
+                    f"tokens={item['total_tokens']}  {cost}"
+                )
+        if report["unpriced_models"]:
+            print("unpriced models (cost excluded): " + ", ".join(report["unpriced_models"]))
+
+    @app.command()
+    def audit(
+        action: str = typer.Argument("export", help="export"),
+        session: str | None = typer.Option(None, "--session", "-s", help="Limit to a single session id or name"),  # type: ignore[attr-defined]
+        run: str | None = typer.Option(None, "--run", help="Limit journal changes to a single run id"),  # type: ignore[attr-defined]
+        format: str = typer.Option("jsonl", "--format", "-f", help="Output format: jsonl or json"),  # type: ignore[attr-defined]
+        out: str | None = typer.Option(None, "--out", "-o", help="Write to a file instead of stdout"),  # type: ignore[attr-defined]
+    ):
+        """Export a portable audit trail (sessions, events, changes, DLQ, usage)."""
+        if action != "export":
+            raise typer.BadParameter("Use: devx audit export [--session ID] [--run ID] [--format jsonl|json] [--out PATH]")  # type: ignore[attr-defined]
+        if format not in {"jsonl", "json"}:
+            raise typer.BadParameter("Format must be 'jsonl' or 'json'")  # type: ignore[attr-defined]
+
+        from devx.audit import collect_audit, render_audit
+        from devx.harness.changes import ChangeJournal
+
+        settings = Settings.load()
+        store = SessionStore(settings.session_db)
+        journal = ChangeJournal(settings.session_db)
+        session_id = None
+        if session:
+            loaded = store.load(session)
+            session_id = loaded["id"] if loaded else session
+        records = collect_audit(store, journal, session_id=session_id, run_id=run)
+        payload = render_audit(records, fmt=format)
+
+        if out:
+            destination = Path(out).expanduser()
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if format == "jsonl" and payload:
+                payload += "\n"
+            destination.write_text(payload, encoding="utf-8")
+            typer.echo(f"Wrote {len(records)} audit records to {destination}")  # type: ignore[attr-defined]
+        else:
+            typer.echo(payload)  # type: ignore[attr-defined]
+
+    @app.command()
+    def changes(
+        action: str = typer.Argument("list", help="list, accept, or reject"),  # type: ignore[attr-defined]
+        path: str | None = typer.Argument(None, help="Target path for accept/reject"),  # type: ignore[attr-defined]
+        run: str | None = typer.Option(None, "--run", help="Change run id (defaults to the most recent run)"),  # type: ignore[attr-defined]
+        json_output: bool = typer.Option(False, "--json"),  # type: ignore[attr-defined]
+        remote: str | None = typer.Option(None, "--remote", help="Remote SSH workspace URI"),  # type: ignore[attr-defined]
+        container: str | None = typer.Option(None, "--container", help="Container workspace URI"),  # type: ignore[attr-defined]
+    ):
+        """Review recorded file changes and accept/reject them one at a time."""
+        from dataclasses import asdict
+
+        from devx.harness.changes import ChangeJournal
+
+        settings = Settings.load()
+        journal = ChangeJournal(settings.session_db)
+
+        if action in {"accept", "reject"}:
+            if not path:
+                raise typer.BadParameter("Provide a path: devx changes accept|reject <path>")  # type: ignore[attr-defined]
+            if run is None:
+                runs = journal.runs()
+                if not runs:
+                    raise typer.BadParameter("No recorded changes to review")  # type: ignore[attr-defined]
+                run = runs[0]
+
+        if action == "list":
+            records = journal.for_run(run) if run else journal.all_changes()
+            if json_output:
+                print(json.dumps([asdict(change) for change in records], default=str))
+                return
+            if not records:
+                print("No recorded changes")
+                return
+            for change in records:
+                status = "approved" if change.approved else "unapproved"
+                print(
+                    f"{change.run_id}  {status}  {change.path}  "
+                    f"{change.before_hash or '-'} -> {change.after_hash or '-'}"
+                )
+            return
+
+        if action == "accept":
+            for change in journal.for_run(run):
+                if ChangeJournal._matches(change.path, path):
+                    print(f"Kept {change.path}")
+                    return
+            raise typer.BadParameter(f"No recorded change matches {path} in run {run}")  # type: ignore[attr-defined]
+
+        if action == "reject":
+            backend = _workspace_backend(remote, container)
+            try:
+                restored = journal.rollback_one(run, path, backend=backend)
+            finally:
+                if backend is not None:
+                    try:
+                        backend.close()
+                    except Exception:
+                        pass
+            if restored:
+                print(f"Reverted {path} (run {run})")
+            else:
+                raise typer.BadParameter(  # type: ignore[attr-defined]
+                    f"Could not revert {path}: not found, or the file changed since the run"
+                )
+            return
+
+        raise typer.BadParameter("Action must be list, accept, or reject")  # type: ignore[attr-defined]
+
+    @app.command()
+    def team(
+        action: str = typer.Argument(..., help="init, status, invite, list-sessions, metrics"),
+        value: str | None = typer.Argument(None, help="Team name (init) or member id (invite)"),
+    ):
+        """Manage the optional team workspace (prototype, local-first)."""
+        from devx.team import collect_team_metrics, create_team, load_team, save_team
+
+        workspace = Path.cwd()
+
+        if action == "init":
+            if not value:
+                raise typer.BadParameter("Provide a team name: devx team init <name>")  # type: ignore[attr-defined]
+            manifest = create_team(workspace, value)
+            typer.echo(f"Initialized team '{manifest.name}' ({manifest.team_id})")  # type: ignore[attr-defined]
+            typer.echo(f"Shared session DB: {manifest.shared_session_db}")  # type: ignore[attr-defined]
+            return
+
+        manifest = load_team(workspace)
+        if manifest is None:
+            raise typer.BadParameter("No team configured. Run: devx team init <name>")  # type: ignore[attr-defined]
+
+        if action in {"status", "metrics"}:
+            for key, val in collect_team_metrics(manifest).items():
+                typer.echo(f"{key}: {val}")  # type: ignore[attr-defined]
+        elif action == "invite":
+            if not value:
+                raise typer.BadParameter("Provide a member: devx team invite <member>")  # type: ignore[attr-defined]
+            added = manifest.add_member(value)
+            save_team(workspace, manifest)
+            typer.echo(f"{'Added' if added else 'Already present'}: {value}")  # type: ignore[attr-defined]
+        elif action == "list-sessions":
+            from devx.harness.session import SessionStore
+
+            store = SessionStore(Path(manifest.shared_session_db))
+            for item in store.list_sessions():
+                typer.echo(f"{item['id']}  {item['name']}  {item['updated_at']}")  # type: ignore[attr-defined]
+        else:
+            raise typer.BadParameter(  # type: ignore[attr-defined]
+                "Use: devx team init <name> | status | invite <member> | list-sessions | metrics"
+            )

@@ -29,11 +29,7 @@ class ActionHandlers:
             object.__setattr__(settings, "remote_ssh", self.app._remote_ssh)
         backend = getattr(self.app, "_remote_backend", None)
         result = WorkspaceTools(
-            PermissionPolicy(
-                settings.workspace,
-                settings.approval_required,
-                getattr(settings, "permission_rules", ()),
-            ),
+            PermissionPolicy.from_settings(settings),
             max_bytes=settings.max_file_bytes,
             timeout=settings.command_timeout,
             backend=backend,
@@ -96,8 +92,9 @@ class ActionHandlers:
 
     def open_setup(self) -> None:
         from devx.config import Settings
+        from devx.tui.components.modals import ProviderSetupModal
         self.app.push_screen(
-            self.app.ProviderSetupModal(Settings.load(), self.app._finish_reconfiguration, first_time=False)
+            ProviderSetupModal(Settings.load(), self.app._finish_reconfiguration, first_time=False)
         )
 
     def show_config(self) -> None:
@@ -110,9 +107,54 @@ class ActionHandlers:
 
     def reload_config(self) -> None:
         from devx.config import Settings
-        settings = Settings.load()
+        try:
+            settings = Settings.load(workspace=getattr(self.app, "_workspace", None))
+        except TypeError:
+            settings = Settings.load()
         self.app._workspace = settings.workspace
+        self.app.update_model_status()
         self.app._write(f"Configuration reloaded for future runs: {settings.provider} / {settings.model}")
+
+    def reset_config(self) -> None:
+        import os
+        from pathlib import Path
+        from devx.config import Settings
+        from devx.configuration import UserConfig
+
+        # 1. Reset user configuration ~/.devx/config.env
+        UserConfig().reset()
+
+        # 2. Reset legacy user configuration ~/.dev/config.env if present
+        legacy_path = Path.home() / ".dev" / "config.env"
+        if legacy_path.is_file():
+            UserConfig(legacy_path).reset()
+
+        # 3. Reset workspace .env if present
+        workspace = getattr(self.app, "_workspace", Path.cwd())
+        workspace_env = workspace / ".env"
+        if workspace_env.is_file():
+            UserConfig(workspace_env).reset()
+
+        # 4. Remove process-level overrides
+        for key in (
+            "DEVX_PROVIDER", "DEV_PROVIDER",
+            "DEVX_MODEL", "DEV_MODEL",
+            "DEVX_BASE_URL", "DEV_BASE_URL",
+            "DEVX_API_KEY", "DEV_API_KEY",
+        ):
+            os.environ.pop(key, None)
+
+        # 5. Reload settings and update status bar
+        try:
+            settings = Settings.load(workspace=workspace)
+        except TypeError:
+            settings = Settings.load()
+        self.app._workspace = settings.workspace
+        self.app.update_model_status()
+        self.app._write(
+            f"Configuration reset to defaults: {settings.provider} / {settings.model}\n"
+            "Use /setup or /provider to configure your provider and model."
+        )
 
     def set_api_key(self) -> None:
         from devx.configuration import ConfigurationError, UserConfig
@@ -142,7 +184,8 @@ class ActionHandlers:
         else:
             self.app._write(f"> {task} (plan only)")
             self.app._run_active = True
-            self.app.run_worker(self.app._ask(task, plan_only=True), exclusive=False)
+            self.app._set_running(True)
+            self.app.run_worker(self.app.runner.ask(task, plan_only=True), exclusive=False)
 
     def connect_remote(self, uri: str) -> None:
         from devx.config import Settings

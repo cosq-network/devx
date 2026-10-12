@@ -7,6 +7,8 @@
 
 Under the hood, `devx` uses a **LangGraph supervisor workflow** (planner → coder → tester), approval-gated workspace tools, SQLite-backed session persistence, and supports any OpenAI-compatible or native LLM provider (OpenAI, Anthropic, Google, Azure, LiteLLM, Ollama, and more).
 
+For the positioning statement, target users, and the core/team feature split, see [docs/positioning.md](docs/positioning.md). Quantitative claims are bound to the [benchmark methodology](docs/benchmark-methodology.md).
+
 ---
 
 ## Table of Contents
@@ -36,8 +38,13 @@ Under the hood, `devx` uses a **LangGraph supervisor workflow** (planner → cod
 | **LangGraph supervisor** | Explicit planner → coder → tester state machine with conditional branching, loops, and interrupt/resume |
 | **Parallel execution** | Automatic parallel coder for multi-file tasks (batch reads) and concurrent lint/test execution |
 | **Remote SSH workspace** | Work transparently on remote servers via SSH/SFTP with jump-host bastion support, auto venv activation, and TCP keepalives |
+| **Containers too** | Run against a `container://` / `docker://` target; file edits and commands execute inside the container with no bind mount required |
+| **Governed remote execution** | The same approvals, hash-guarded undo, and audit trail as local runs — plus policy presets (`remote_only`, `deny_local_writes`, `strict`) and `devx doctor --remote` preflight (see [docs/governed-remote.md](docs/governed-remote.md)) |
 | **Approval-gated tools** | All file writes and shell commands require explicit user approval by default |
 | **Safe review and recovery** | Approved writes show bounded diffs, are atomic and journaled, and can be undone with `/undo` |
+| **File-by-file review** | `devx changes list` / `accept` / `reject` reviews each recorded change and reverts one at a time, hash-guarded |
+| **Cost visibility** | Per-model pricing turns recorded token usage into dollars with `devx usage` |
+| **Portable audit trail** | `devx audit export` emits sessions, events, changes, DLQ entries, and usage as one JSON/JSONL stream |
 | **Resilience & circuit breaker** | Circuit breaker protection, rate limit detection, and exponential backoff retry for LLM calls |
 | **Dead Letter Queue (DLQ)** | Failed runs are captured in SQLite for debugging, inspection, and one-command retries |
 | **SQLite sessions** | Persistent session state, event history, and checkpoint-compatible run IDs |
@@ -50,6 +57,8 @@ Under the hood, `devx` uses a **LangGraph supervisor workflow** (planner → cod
 | **Local workspace indexing** | Background or on-demand semantic indexing with `devx index` and file-watcher `--watch` |
 | **Observability suite** | Structured JSON logs, correlation IDs, health checks (`devx health`), and Prometheus metrics (`devx metrics`) |
 | **Project initialization** | Fast interactive or non-interactive onboarding wizard with `devx init` |
+| **Knowledge graph memory** | Optional SQLite node/edge store that persists approval decisions and task history for cross-session context |
+| **Team layer (prototype)** | Local-first `devx team` manifest, membership registry, and shared-session usage counters (see [docs/team-layer.md](docs/team-layer.md)) |
 | **Cancellation** | Cancel active TUI runs and terminate active project commands safely |
 | **Multi-provider support** | OpenAI, Anthropic, Google, Azure, OpenRouter, LiteLLM, Ollama, or any OpenAI-compatible endpoint |
 | **Local token optimization** | Optional ONNX INT8 embeddings for semantic cache and context compression (zero API calls) |
@@ -95,6 +104,9 @@ Under the hood, `devx` uses a **LangGraph supervisor workflow** (planner → cod
 - **`src/devx/agents/graph.py`** — LangGraph state graph builder; orchestrates planner, coder, and tester stages with conditional branching
 - **`src/devx/harness/tools.py`** — `WorkspaceTools`: read, write, replace, search, `git_diff`, and `run` (shell commands)
 - **`src/devx/harness/backend.py`** & **`ssh_backend.py`** — Pluggable `LocalWorkspaceBackend` and `SshWorkspaceBackend` for local and remote SSH/SFTP environments
+- **`src/devx/harness/container_backend.py`** — `ContainerWorkspaceBackend` running file ops and commands via `docker exec` (no bind mount)
+- **`src/devx/pricing.py`** — per-model pricing table and cost formatting for `devx usage`
+- **`src/devx/audit.py`** — portable audit-trail collection and JSON/JSONL rendering
 - **`src/devx/harness/tool_registry.py`** — built-in, workspace plugin, and MCP tool registration
 - **`src/devx/harness/mcp.py`** — bounded stdio MCP initialization, discovery, and tool calls
 - **`src/devx/harness/approval.py`** — `ApprovalManager` gates all mutations (writes, command execution)
@@ -207,6 +219,8 @@ Both `DEVX_*` and legacy `DEV_*` variable names are supported, with `DEVX_*` tak
 | `DEVX_WORKSPACE` | `cwd` (current working directory) | Workspace root directory |
 | `DEVX_REMOTE_SSH` | `""` | Remote workspace SSH target (`user@host:/path` or `ssh://...`) |
 | `DEVX_SSH_KEY` | `""` | Path to private SSH key for remote authentication |
+| `DEVX_CONTAINER` | `""` | Default container workspace URI (`container://name/path`) |
+| `DEVX_POLICY_PRESET` | `""` | Policy preset: `remote_only`, `deny_local_writes`, `protected`, or `strict` |
 | `DEVX_SESSION_DB` | `~/.devx/sessions.db` | SQLite session database path |
 | `DEVX_CACHE_DB` | `~/.devx/cache.db` | Semantic cache database path |
 | `DEVX_APPROVAL_REQUIRED` | `true` | Require approval for file writes and commands |
@@ -265,7 +279,8 @@ when configured.
     "max_messages": 24,
     "max_chars": 24000,
     "summary_chars": 4000
-  }
+  },
+  "policy_preset": "strict"
 }
 ```
 
@@ -342,6 +357,7 @@ Run a single agent task.
 devx ask "explain @src/main.py"
 devx ask --session my-project "fix the bug in @src/utils.py"
 devx ask --remote "user@remote-host:/path/to/project" "run tests and fix failures"
+devx ask --container "container://api-box/app" "run the suite"
 devx ask --approve-all "run tests and fix failures"   # trusted workspaces only
 devx ask --plan-only "design the authentication refactor"  # plan without edits
 ```
@@ -351,9 +367,12 @@ devx ask --plan-only "design the authentication refactor"  # plan without edits
 | `--session NAME` | Resume or create a named session |
 | `-r, --remote URI` | Remote workspace SSH target (e.g. `user@host:/path` or `ssh://...`) |
 | `--ssh-key PATH` | Path to private SSH key for remote authentication |
+| `--container URI` | Container workspace target (`container://name/path` or `docker://name/path`) |
 | `--plan-first / --no-plan-first` | Prompt for user confirmation on generated plan before coding (enabled by default) |
 | `--plan-only` | Create the plan and stop before coding, testing, or mutations |
 | `--approve-all` | Auto-approve all writes and commands (use only in trusted, isolated workspaces) |
+| `--approval-cache` | Reuse approval decisions within a single run |
+| `--approval-matching` | Auto-approve actions matching project permission rules |
 | `--json` | Emit the complete run state as JSON for automation |
 | `--json-logs` | Output structured JSON logs with correlation IDs |
 
@@ -371,7 +390,44 @@ Run a diagnostic check to verify configuration, provider connectivity, and depen
 
 ```bash
 devx doctor
+devx doctor --remote "deploy@bastion:/srv/app"   # preflight a remote workspace
+devx doctor --remote "deploy@bastion:/srv/app" --json
 ```
+
+With `--remote`, `devx` validates connection, authentication, the remote path,
+writability, `git`, and the virtualenv before you start a run.
+
+### `devx usage`
+
+Show recorded token usage and estimated cost, priced per model.
+
+```bash
+devx usage
+devx usage --session my-session --json
+```
+
+### `devx audit export`
+
+Export a portable audit trail (sessions, events, changes, DLQ, usage).
+
+```bash
+devx audit export --format jsonl --out audit.jsonl
+devx audit export --session my-session --format json
+```
+
+### `devx changes`
+
+Review recorded file changes and accept or reject them one at a time.
+
+```bash
+devx changes list
+devx changes list --run 4f2a1c --json
+devx changes accept src/parser.py --run 4f2a1c
+devx changes reject src/legacy.py --run 4f2a1c --remote "deploy@bastion:/srv/app"
+```
+
+`reject` is hash-guarded: it reverts a file only if it still matches the run's
+output, otherwise it exits non-zero and leaves the file untouched.
 
 ### `devx health`
 
@@ -439,6 +495,19 @@ devx session dlq-retry <ENTRY_ID>  # Retry a failed task
 devx session dlq-remove <ENTRY_ID> # Remove a DLQ entry
 ```
 
+### `devx team`
+
+Manage the optional, local-first team workspace (prototype). Team state is a
+portable `.devx/team.json` manifest plus a shared SQLite session database. No
+server component is required. See [Team layer](docs/team-layer.md).
+
+```bash
+devx team init <NAME>       # Create the team manifest
+devx team invite <MEMBER>   # Register a member id
+devx team status            # Team info + usage counters
+devx team list-sessions     # List sessions in the shared database
+```
+
 ---
 
 ## TUI Usage
@@ -476,13 +545,6 @@ Launch the TUI with `devx tui`.
 
 > **Note:** The command set is minimal by design. Additional commands may be added in future releases.
 
-The offline benchmark suite measures the bounded-output, command-safety, rollback,
-and context-budget primitives without contacting a model:
-
-```bash
-python scripts/benchmark.py
-```
-
 ---
 
 ## Supported Providers
@@ -516,8 +578,13 @@ By default, `devx` is designed with a security-first approach:
 - **Extension approval** — Workspace plugins and MCP tools require approval by default and remain subject to tool-call budgets
 - **Secret redaction** — API keys and tokens are redacted from logs and traces
 - **No auto-approve** — `--approve-all` is explicitly opt-in and intended only for trusted, isolated workspaces
+- **Governed remote execution** — Remote (SSH) and container runs use the same approvals, sandbox, and hash-guarded undo as local runs; remote commands run under `setsid` and are killed as a process group on cancel/timeout; dropped connections fail closed with a clear error
+- **Policy presets** — `remote_only`, `deny_local_writes`, and `strict` enforce hard constraints that apply even to approved actions
+- **Auditable by default** — Every change is journaled with before/after hashes and can be exported with `devx audit export`
 
-For more details, see [SECURITY.md](SECURITY.md).
+For the full model, see [Threat model](docs/threat-model.md) and
+[Governed remote execution](docs/governed-remote.md). For reporting, see
+[SECURITY.md](SECURITY.md).
 
 ---
 
@@ -565,7 +632,9 @@ compatibility:
 python -m pytest -q tests/test_provider_contract.py
 ```
 
-The offline benchmark suite is also part of the validation workflow:
+The offline benchmark suite is also part of the validation workflow. It measures
+the bounded-output, command-safety, rollback, and context-budget primitives
+without contacting a model. See [Benchmark methodology](docs/benchmark-methodology.md).
 
 ```bash
 python scripts/benchmark.py
@@ -628,7 +697,7 @@ Contributions are welcome. Please:
 
 ## License
 
-MIT
+Apache License 2.0. See [LICENSE](LICENSE) for the full text.
 
 ---
 

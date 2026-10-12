@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 import subprocess
 import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any
 
 from devx.harness.backend import BackendToolResult, WorkspaceBackend
 from devx.harness.runtime import CancellationToken, RunCancelled

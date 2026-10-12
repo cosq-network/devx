@@ -2,29 +2,48 @@ from __future__ import annotations
 
 import difflib
 import os
-import shutil
 import subprocess  # nosec B404 - commands are tokenized, shell=False, approval-gated, and policy-validated.
-import threading
-import time
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 from devx.harness.backend import WorkspaceBackend
-from devx.harness.changes import ChangeJournal, file_hash
+from devx.harness.changes import ChangeJournal
 from devx.harness.local_backend import LocalWorkspaceBackend
 from devx.harness.permissions import PermissionError, PermissionPolicy
-from devx.harness.runtime import CancellationToken, RunCancelled
+from devx.harness.runtime import CancellationToken
 
 
 @dataclass(frozen=True)
 class ToolResult:
+    """Result of a workspace tool operation.
+
+    Attributes:
+        ok: Whether the operation succeeded.
+        output: The command/output text produced.
+        exit_code: Process exit code, if applicable (``None`` for read operations).
+    """
     ok: bool
     output: str
     exit_code: int | None = None
 
 
 class WorkspaceTools:
+    """Workspace tools for reading, writing, searching, and running commands.
+
+    All operations respect the ``PermissionPolicy`` and require explicit
+    approval for writes and shell commands by default. File writes are
+    atomic with automatic backups and before/after hashes recorded in a
+    ``ChangeJournal``.
+
+    Attributes:
+        policy: The permission policy governing approval rules.
+        max_bytes: Maximum file size to read/edit (bytes).
+        timeout: Timeout for shell commands (seconds).
+        journal: Change journal for tracking mutations (optional).
+        run_id: Identifier for the current run.
+        cancellation: Token for requesting cancellation.
+        backend: Filesystem backend (local or SSH).
+    """
     _preview_bytes = 12_000
 
     def __init__(self, policy: PermissionPolicy, *, max_bytes: int = 1_000_000, timeout: float = 120,
@@ -51,7 +70,7 @@ class WorkspaceTools:
         return Path(path)
 
     def read(self, path: str | Path) -> ToolResult:
-        target = self.policy.path(self._normalize_target_path(path))
+        target = self.policy.path(self._normalize_target_path(path), remote=self.backend.is_remote)
         try:
             rel = target.relative_to(self.policy.workspace).as_posix()
             data = self.backend.read_bytes(rel, self.max_bytes)
@@ -88,7 +107,7 @@ class WorkspaceTools:
 
     def preview_write(self, path: str | Path, content: str) -> str:
         """Return a bounded unified diff for a proposed write without mutating files."""
-        target = self.policy.path(self._normalize_target_path(path))
+        target = self.policy.path(self._normalize_target_path(path), remote=self.backend.is_remote)
         current = self._read_preview(target)
         proposed = content.encode("utf-8")[: self._preview_bytes].decode("utf-8", errors="replace")
         diff = difflib.unified_diff(
@@ -123,7 +142,7 @@ class WorkspaceTools:
 
     def preview_replace(self, path: str | Path, old: str, new: str) -> str:
         """Return a bounded diff for an exact replacement proposal."""
-        target = self.policy.path(self._normalize_target_path(path))
+        target = self.policy.path(self._normalize_target_path(path), remote=self.backend.is_remote)
         current = self._read_preview(target)
         proposed = current.replace(old, new, 1)
         diff = difflib.unified_diff(
@@ -160,12 +179,12 @@ class WorkspaceTools:
             except OSError as exc:
                 return ToolResult(False, str(exc))
 
-        target = self.policy.path(Path(path))
+        target = self.policy.path(Path(path), remote=self.backend.is_remote)
         try:
             output = bytearray()
             for candidate in target.rglob("*") if target.is_dir() else [target]:
                 try:
-                    candidate = self.policy.path(candidate)
+                    candidate = self.policy.path(candidate, remote=self.backend.is_remote)
                     if not candidate.is_file() or candidate.stat().st_size > self.max_bytes:
                         continue
                 except (OSError, PermissionError):
@@ -192,7 +211,7 @@ class WorkspaceTools:
             # Validate the command first so dangerous commands still raise a
             # policy error, while preserving the historical ToolResult-based
             # response for an ordinary command that simply needs approval.
-            args = self.policy.command(command, approved=True)
+            args = self.policy.command(command, approved=True, remote=self.backend.is_remote)
             if self.policy.requires_approval("shell", " ".join(args)) and not approved:
                 return ToolResult(False, "Command requires explicit approval")
             backend_res = self.backend.run_command(
@@ -219,7 +238,7 @@ class WorkspaceTools:
             process.kill()
 
     def _approved_path(self, path: str | Path, approved: bool) -> Path:
-        return self.policy.path(Path(path), write=True, approved=approved)
+        return self.policy.path(Path(path), write=True, approved=approved, remote=self.backend.is_remote)
 
     def _read_preview(self, target: Path) -> str:
         try:
@@ -227,6 +246,19 @@ class WorkspaceTools:
             return self.backend.read_bytes(rel, self._preview_bytes).decode("utf-8", errors="replace")
         except (FileNotFoundError, OSError):
             return ""
+
+    def check_approval(self, action: str, target: str, reason: str = "") -> tuple[bool, str | None]:
+        """Check if an action requires approval and return whether it's allowed.
+        
+        Returns (requires_approval, denial_reason) tuple.
+        If approval is required and not granted, returns (True, denial_message).
+        If approval is not required or already granted, returns (False, None).
+        """
+        if self.requires_approval(action, target):
+            # Approval is required - the caller should check the user's decision
+            # via the allowed() callback or present an approval prompt
+            return True, None
+        return False, None
 
     def _bound_text(self, value: str) -> str:
         return value.encode("utf-8")[: self._preview_bytes].decode("utf-8", errors="replace")

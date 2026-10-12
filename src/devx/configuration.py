@@ -132,6 +132,38 @@ class UserConfig:
             raise ConfigurationError("API key must not be empty")
         self.update({"DEVX_API_KEY": api_key.strip()})
 
+    def reset(
+        self,
+        keys: tuple[str, ...] = (
+            "DEVX_PROVIDER",
+            "DEV_PROVIDER",
+            "DEVX_MODEL",
+            "DEV_MODEL",
+            "DEVX_BASE_URL",
+            "DEV_BASE_URL",
+            "DEVX_API_KEY",
+            "DEV_API_KEY",
+        ),
+    ) -> None:
+        """Remove provider, model, and credential configuration keys."""
+        if not self.path.exists():
+            return
+        existing = self.path.read_text(encoding="utf-8").splitlines()
+        output: list[str] = []
+        for line in existing:
+            stripped = line.strip()
+            key = stripped.split("=", 1)[0].removeprefix("export ").strip() if "=" in stripped else ""
+            if key not in keys:
+                output.append(line)
+        cleaned = "\n".join(output).strip()
+        if cleaned:
+            self.path.write_text(cleaned + "\n", encoding="utf-8")
+        else:
+            try:
+                self.path.unlink()
+            except OSError:
+                self.path.write_text("", encoding="utf-8")
+
 
 def list_models(base_url: str, api_key: str = "") -> list[ModelInfo]:
     """Discover models from an OpenAI-compatible ``/models`` endpoint."""

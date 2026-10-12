@@ -6,12 +6,12 @@ from typing import TYPE_CHECKING, ClassVar
 if TYPE_CHECKING:
     from textual.app import App, ComposeResult
     from textual.containers import Horizontal, Vertical
-    from textual.widgets import Footer, Header, Input, ProgressBar, RichLog, Static
+    from textual.widgets import Header, Input, ProgressBar, RichLog, Static
 else:
     try:
         from textual.app import App, ComposeResult
         from textual.containers import Horizontal, Vertical
-        from textual.widgets import Footer, Header, Input, ProgressBar, RichLog, Static
+        from textual.widgets import Header, Input, ProgressBar, RichLog, Static
     except ImportError:  # pragma: no cover
         class App:
             pass
@@ -23,9 +23,6 @@ else:
             pass
         
         class Vertical:
-            pass
-        
-        class Footer:
             pass
         
         class Header:
@@ -44,6 +41,7 @@ else:
             pass
 
 if TYPE_CHECKING:
+    from devx.harness.backend import WorkspaceBackend
     from devx.harness.runtime import CancellationToken
 
 from devx.tui.components import (
@@ -96,10 +94,6 @@ class DevTUI(App):
         background: #202020;
         color: #f2f2f2;
     }
-    Footer {
-        background: #1c1c1c;
-        color: #bdbdbd;
-    }
     ProviderSetupModal {
         align: center middle;
     }
@@ -145,6 +139,7 @@ class DevTUI(App):
         height: 3;
         width: 100%;
         margin: 0;
+        padding: 1 2;
         border: none;
         background: #1b1b1b;
     }
@@ -161,6 +156,9 @@ class DevTUI(App):
     }
     #status-text {
         color: #d0d0d0;
+    }
+    #model-text {
+        color: #bdbdbd;
     }
     #progress-bar {
         width: 4;
@@ -226,7 +224,7 @@ class DevTUI(App):
         super().__init__()
         self.session_id = session_id or "default"
         self._remote_ssh = ""
-        self._remote_backend = None
+        self._remote_backend: WorkspaceBackend | None = None
         try:
             from devx.config import Settings
             _loaded = Settings.load()
@@ -301,13 +299,27 @@ class DevTUI(App):
             with Horizontal(id="status-bar"):
                 yield ProgressBar(id="progress-bar", total=None, show_bar=True, show_percentage=False, show_eta=False)
                 yield Static("● ready", id="status-text", classes="status-item")
+                yield Static("openai:gpt-4o", id="model-text", classes="status-item")
                 yield Static(f"session: {self.session_id}", id="session-text", classes="status-item")
                 yield Static("hint: /help • /setup • /model", id="hint-text", classes="status-item")
-            yield Footer()
+
+    def update_model_status(self) -> None:
+        try:
+            from devx.config import Settings
+
+            try:
+                settings = Settings.load(workspace=getattr(self, "_workspace", None))
+            except TypeError:
+                settings = Settings.load()
+            model_widget = self.query_one("#model-text", Static)
+            model_widget.update(f"{settings.provider}:{settings.model}")
+        except Exception:
+            pass
 
     def on_mount(self) -> None:
         from devx.config import Settings
 
+        self.update_model_status()
         settings = Settings.load()
         if self._needs_provider_setup(settings):
             self.push_screen(ProviderSetupModal(settings, self._finish_setup))
@@ -319,6 +331,7 @@ class DevTUI(App):
         return settings.provider != "ollama" and settings.api_key in {"", "sk-placeholder"}
 
     def _finish_setup(self) -> None:
+        self.update_model_status()
         self.query_one("#input-bar", Input).focus()
         self._write("Ready. Type a task or /help for commands.")
 
@@ -326,6 +339,7 @@ class DevTUI(App):
         from devx.config import Settings
 
         settings = Settings.load()
+        self.update_model_status()
         self._write(f"Configuration saved: {settings.provider} / {settings.model}")
         self.query_one("#input-bar", Input).focus()
 
@@ -440,6 +454,8 @@ class DevTUI(App):
             self.actions.show_config()
         elif value == "/config reload":
             self.actions.reload_config()
+        elif value in {"/config reset", "/config clear"}:
+            self.actions.reset_config()
         elif value == "/session":
             self.sessions.list_sessions()
         elif value.startswith("/session use "):

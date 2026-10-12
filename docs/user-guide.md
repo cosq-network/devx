@@ -192,8 +192,8 @@ Under the hood, `devx` executes a LangGraph supervisor graph:
 ```
 
 - **Planner**: Gathers relevant context, queries the model, and creates a step-by-step strategy.
-- **Coder**: Implements minimal changes. For tasks touching multiple files, `devx` automatically routes to **Parallel Coder**, which batch-reads files in parallel.
-- **Tester**: Executes test and lint commands in parallel to verify the implementation. If tests fail, it enters a bounded repair loop (up to 2 repair attempts).
+- **Coder**: Implements minimal changes. For tasks touching multiple files or using keywords like "multiple", "several", or "batch", `devx` automatically routes to **Parallel Coder**, which batch-reads files and generates coordinated diffs.
+- **Tester**: Executes test and lint commands in parallel to verify the implementation. If tests fail, it enters a bounded repair loop (up to 2 repair attempts with revised code from the coder).
 
 ### 2. Approval Gates
 
@@ -202,7 +202,7 @@ Whenever the agent wants to touch your filesystem or execute a shell command, ex
 - The target file or command
 - A unified diff preview of the proposed changes
 
-You decide whether to proceed (`y`) or decline (`n`).
+You decide whether to proceed (`y`) or decline (`n`). By default, all file writes and shell commands require approval (`DEVX_APPROVAL_REQUIRED=true` by default). You can use `--approve-all` only in trusted, isolated workspaces.
 
 ### 3. Persistent SQLite Sessions
 
@@ -499,8 +499,8 @@ DEVX_COMMAND_TIMEOUT=120          # Shell execution timeout in seconds
 
 # Local Token Optimization
 DEVX_EMBEDDINGS_ENABLED=true                # Enable local ONNX INT8 embeddings
-DEVX_DIAGNOSTIC_DISTILLATION_ENABLED=true   # Distill test failures (80-90% token reduction in repairs)
-DEVX_DECOUPLED_CONTEXT_ENABLED=true         # Decouple planner/coder contexts (40-60% token reduction)
+DEVX_DIAGNOSTIC_DISTILLATION_ENABLED=true   # Distill test failures to cut repair-loop tokens (workload-dependent)
+DEVX_DECOUPLED_CONTEXT_ENABLED=true         # Decouple planner/coder contexts to shrink initial prompts
 
 # Remote SSH Workspace
 DEVX_REMOTE_SSH=ssh://ubuntu@host/srv/app   # Remote workspace URI or ~/.ssh/config host alias

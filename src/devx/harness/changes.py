@@ -78,45 +78,95 @@ class ChangeJournal:
             rows = conn.execute("SELECT run_id,path,before_hash,after_hash,approved,backup_path FROM changes WHERE run_id=? ORDER BY id", (run_id,)).fetchall()
         return [Change(row[0], row[1], row[2], row[3], bool(row[4]), row[5]) for row in rows]
 
+    def all_changes(self) -> list[Change]:
+        """Return every recorded change, oldest first, for audit export."""
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT run_id,path,before_hash,after_hash,approved,backup_path FROM changes ORDER BY id"
+            ).fetchall()
+        return [Change(row[0], row[1], row[2], row[3], bool(row[4]), row[5]) for row in rows]
+
     def rollback(self, run_id: str, backend: WorkspaceBackend | None = None) -> list[str]:
         """Restore only files that still match the recorded post-change hash."""
         restored: list[str] = []
         for change in reversed(self.for_run(run_id)):
-            if backend is not None and getattr(backend, "is_remote", False):
-                import posixpath
-                clean = change.path.strip().replace("\\", "/")
-                if clean.startswith("/"):
-                    root_norm = posixpath.normpath(backend.root)
-                    clean_norm = posixpath.normpath(clean)
-                    if clean_norm.startswith(root_norm):
-                        rel = posixpath.relpath(clean_norm, root_norm)
-                    else:
-                        rel = clean_norm.lstrip("/")
+            if self._restore_change(change, backend):
+                restored.append(change.path)
+        return restored
+
+    def rollback_one(
+        self, run_id: str, path: str | Path, backend: WorkspaceBackend | None = None
+    ) -> bool:
+        """Restore exactly one recorded file (file-by-file reject).
+
+        Returns ``True`` only when the change was found *and* restored. The same
+        hash guard as :meth:`rollback` applies, so a manually-edited file is left
+        untouched.
+        """
+        for change in reversed(self.for_run(run_id)):
+            if not self._matches(change.path, str(path)):
+                continue
+            return self._restore_change(change, backend)
+        return False
+
+    def runs(self) -> list[str]:
+        """Return run ids that produced changes, most recent first."""
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT run_id, MAX(id) AS latest FROM changes GROUP BY run_id ORDER BY latest DESC"
+            ).fetchall()
+        return [row[0] for row in rows]
+
+    @staticmethod
+    def _matches(recorded: str, requested: str) -> bool:
+        recorded_norm = recorded.replace("\\", "/")
+        requested_norm = requested.replace("\\", "/")
+        return (
+            recorded_norm == requested_norm
+            or recorded_norm.endswith("/" + requested_norm)
+            or Path(recorded_norm).name == Path(requested_norm).name
+        )
+
+    def _restore_change(self, change: Change, backend: WorkspaceBackend | None) -> bool:
+        """Restore a single change, honoring the recorded post-change hash.
+
+        Returns ``True`` when bytes were actually restored/removed.
+        """
+        if backend is not None and getattr(backend, "is_remote", False):
+            import posixpath
+            clean = change.path.strip().replace("\\", "/")
+            if clean.startswith("/"):
+                root_norm = posixpath.normpath(backend.root)
+                clean_norm = posixpath.normpath(clean)
+                if clean_norm.startswith(root_norm):
+                    rel = posixpath.relpath(clean_norm, root_norm)
                 else:
-                    rel = clean
+                    rel = clean_norm.lstrip("/")
+            else:
+                rel = clean
 
-                if backend.file_hash(rel) != change.after_hash:
-                    continue
-                if change.backup_path:
-                    backup = Path(change.backup_path)
-                    if backup.exists():
-                        backend.write_bytes(rel, backup.read_bytes())
-                        restored.append(change.path)
-                elif change.before_hash is None and backend.exists(rel):
-                    backend.remove(rel)
-                    restored.append(change.path)
-                continue
-
-            target = Path(change.path)
-            if file_hash(target) != change.after_hash:
-                continue
+            if backend.file_hash(rel) != change.after_hash:
+                return False
             if change.backup_path:
                 backup = Path(change.backup_path)
                 if backup.exists():
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(backup, target)
-                    restored.append(str(target))
-            elif change.before_hash is None and target.exists():
-                target.unlink()
-                restored.append(str(target))
-        return restored
+                    backend.write_bytes(rel, backup.read_bytes())
+                    return True
+            elif change.before_hash is None and backend.exists(rel):
+                backend.remove(rel)
+                return True
+            return False
+
+        target = Path(change.path)
+        if file_hash(target) != change.after_hash:
+            return False
+        if change.backup_path:
+            backup = Path(change.backup_path)
+            if backup.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(backup, target)
+                return True
+        elif change.before_hash is None and target.exists():
+            target.unlink()
+            return True
+        return False

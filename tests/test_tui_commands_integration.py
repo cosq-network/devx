@@ -6,6 +6,7 @@ from devx import configuration
 from devx.config import Settings
 from devx.harness.session import SessionStore
 from devx.tui.app import DevTUI
+from textual.widgets import Static
 
 
 async def submit_command(pilot, command: str) -> None:
@@ -176,3 +177,110 @@ def test_missing_session_reports_error_without_changing_active_session(monkeypat
             assert pilot.app._transcript[-1] == "Session not found: missing-session"
 
     asyncio.run(run())
+
+
+def test_status_bar_displays_provider_and_model_indicator(monkeypatch, tmp_path: Path):
+    current_model = "test-model-1"
+    settings = Settings(
+        provider="openrouter",
+        api_key="test-key",
+        model=current_model,
+        workspace=tmp_path,
+        session_db=tmp_path / "sessions.db",
+    )
+    monkeypatch.setattr("devx.config.Settings.load", staticmethod(lambda **kwargs: settings))
+
+    class FakeUserConfig:
+        def set_model(self, model: str) -> None:
+            nonlocal settings
+            settings = Settings(
+                provider="openrouter",
+                api_key="test-key",
+                model=model,
+                workspace=tmp_path,
+                session_db=tmp_path / "sessions.db",
+            )
+
+    monkeypatch.setattr(configuration, "UserConfig", FakeUserConfig)
+
+    async def run() -> None:
+        async with DevTUI(session_id="default").run_test() as pilot:
+            model_widget = pilot.app.query_one("#model-text", Static)
+            assert "openrouter:test-model-1" in str(model_widget.render())
+
+            # Now switch model using /model use
+            await submit_command(pilot, "/model use new-coder-model")
+            assert "openrouter:new-coder-model" in str(model_widget.render())
+
+    asyncio.run(run())
+
+
+def test_config_reset_restores_defaults_and_updates_status_bar(monkeypatch, tmp_path: Path):
+    # Setup custom settings initially
+    active_settings = Settings(
+        provider="openrouter",
+        api_key="custom-key",
+        model="custom-model",
+        workspace=tmp_path,
+        session_db=tmp_path / "sessions.db",
+    )
+
+    def fake_load(**kwargs):
+        return active_settings
+
+    monkeypatch.setattr("devx.config.Settings.load", staticmethod(fake_load))
+
+    reset_called = False
+
+    class FakeUserConfig:
+        def __init__(self, path=None):
+            pass
+
+        def reset(self, keys=None):
+            nonlocal reset_called, active_settings
+            reset_called = True
+            # Simulate reset restoring defaults
+            active_settings = Settings(
+                provider="openai",
+                api_key="sk-placeholder",
+                model="gpt-4o",
+                workspace=tmp_path,
+                session_db=tmp_path / "sessions.db",
+            )
+
+    monkeypatch.setattr(configuration, "UserConfig", FakeUserConfig)
+
+    async def run() -> None:
+        async with DevTUI(session_id="default").run_test() as pilot:
+            model_widget = pilot.app.query_one("#model-text", Static)
+            assert "openrouter:custom-model" in str(model_widget.render())
+
+            await submit_command(pilot, "/config reset")
+            assert reset_called is True
+            assert "Configuration reset to defaults: openai / gpt-4o" in pilot.app._transcript[-1]
+            assert "openai:gpt-4o" in str(model_widget.render())
+
+    asyncio.run(run())
+
+
+def test_plan_command_triggers_runner_plan_only(monkeypatch, tmp_path: Path):
+    plan_called: list[tuple[str, bool]] = []
+    settings = Settings(api_key="test-key", workspace=tmp_path, session_db=tmp_path / "sessions.db")
+    monkeypatch.setattr("devx.config.Settings.load", staticmethod(lambda **kwargs: settings))
+
+    async def fake_ask(self, task: str, *, plan_only: bool = False, plan_first: bool = True):
+        plan_called.append((task, plan_only))
+        self.app._run_active = False
+        self.app._set_running(False)
+
+    monkeypatch.setattr("devx.tui.components.runner.AgentRunner.ask", fake_ask)
+
+    async def run() -> None:
+        async with DevTUI(session_id="default").run_test() as pilot:
+            await submit_command(pilot, "/plan build auth service")
+            assert plan_called == [("build auth service", True)]
+            assert "> build auth service (plan only)" in pilot.app._transcript[-1]
+
+    asyncio.run(run())
+
+

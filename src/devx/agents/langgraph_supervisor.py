@@ -185,11 +185,12 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
             )
         backend = SshWorkspaceBackend(ssh_cfg)
 
-    tools = WorkspaceTools(PermissionPolicy(
-                               settings.workspace,
-                               settings.approval_required,
-                               getattr(settings, "permission_rules", ()),
-                           ),
+    container = getattr(settings, "container", "")
+    if backend is None and container:
+        from devx.harness.container_backend import ContainerConfig, ContainerWorkspaceBackend
+        backend = ContainerWorkspaceBackend(ContainerConfig.from_uri(container))
+
+    tools = WorkspaceTools(PermissionPolicy.from_settings(settings),
                            max_bytes=settings.max_file_bytes, timeout=settings.command_timeout,
                            journal=journal, run_id=run_id, cancellation=cancellation,
                            backend=backend)
@@ -212,11 +213,7 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
             if tool_call_count > max(1, int(settings.max_tool_calls)):
                 raise AgentToolLimitExceeded(f"Tool-call limit exceeded ({settings.max_tool_calls})")
     paths = files or []
-    policy = PermissionPolicy(
-        settings.workspace,
-        settings.approval_required,
-        getattr(settings, "permission_rules", ()),
-    )
+    policy = PermissionPolicy.from_settings(settings)
     path_objects = [policy.path(Path(path)) for path in paths]
     embedder = None
     semantic_cache = None

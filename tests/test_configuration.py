@@ -27,6 +27,28 @@ def test_user_config_updates_values_without_duplicate_keys(tmp_path: Path):
     assert "DEVX_API_KEY=new-secret" in text
 
 
+def test_user_config_reset_removes_keys_and_preserves_other_variables(tmp_path: Path):
+    config = UserConfig(tmp_path / "config.env")
+    config.set_provider("openrouter")
+    config.set_model("test-model")
+    config.set_api_key("test-key")
+    config.update({"CUSTOM_VAR": "keep-me"})
+
+    # Reset provider keys
+    config.reset()
+
+    text = config.path.read_text(encoding="utf-8")
+    assert "DEVX_PROVIDER" not in text
+    assert "DEVX_MODEL" not in text
+    assert "DEVX_BASE_URL" not in text
+    assert "DEVX_API_KEY" not in text
+    assert "CUSTOM_VAR=keep-me" in text
+
+    # When all keys are reset, file should be unlinked
+    config.reset(keys=("CUSTOM_VAR",))
+    assert not config.path.exists()
+
+
 def test_secret_masking_never_returns_short_or_placeholder_secret():
     assert mask_secret("sk-placeholder") == "<not configured>"
     assert mask_secret("short") == "<configured>"

@@ -9,6 +9,7 @@ HELP_TOPICS = {
     "setup": (
         "SETUP\n"
         "/setup or /configure  Open provider, API key, base URL, and coding-model setup.\n"
+        "/config reset          Reset provider, model, and credentials back to defaults.\n"
         "/api-key set           Change only the masked API key."
     ),
     "provider": (
@@ -58,6 +59,7 @@ QUICK_START_HELP = (
     "/session               List or switch saved sessions.\n"
     "/agent [name]          Choose supervisor, planner, coder, or tester.\n"
     "/config show           Show active settings with the API key masked.\n"
+    "/config reset          Reset configuration to defaults.\n"
     "/copy /clear /diff      Copy, clear, or show the Git diff.\n"
     "/undo /plan <task>      Undo the last run or preview a plan.\n"
     "/cancel                 Cancel a running task.\n"
@@ -105,6 +107,7 @@ class ProviderManager:
         try:
             from devx.configuration import UserConfig
             UserConfig().set_provider(value)
+            self.app.update_model_status()
             self.app._write(f"Provider saved: {value}. New runs will use it.")
         except ConfigurationError as exc:
             self.app._write(str(exc))
@@ -183,6 +186,7 @@ class ModelManager:
         try:
             from devx.configuration import UserConfig
             UserConfig().set_model(value)
+            self.app.update_model_status()
             self.app._write(f"Model saved: {value}. New runs will use it.")
         except ConfigurationError as exc:
             self.app._write(str(exc))
