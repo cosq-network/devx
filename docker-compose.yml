@@ -1,0 +1,41 @@
+# Disposable remote workspace for devx's governed remote execution.
+#
+# This mirrors exactly what `devx lab up` boots (and what the opt-in SSH e2e
+# suite uses): a throwaway linuxserver/openssh-server container with an empty
+# workspace root at /config/repo. Use it when you want a declarative, inspectable
+# alternative to the one-shot `devx lab up` command.
+#
+# Quick start:
+#   docker compose up -d
+#   docker compose exec -u root remote-workspace sh -c \
+#     "mkdir -p /config/repo && chown -R 1000:1000 /config/repo"
+#   docker compose ps          # note the random host port (e.g. 0.0.0.0:49153->2222)
+#   devx doctor --remote ssh://devx@127.0.0.1:<HOST_PORT>/config/repo
+#   devx ask --remote ssh://devx@127.0.0.1:<HOST_PORT>/config/repo --approve-all "your task"
+#   docker compose down
+#
+# To address the workspace through the container backend instead of SSH, pass
+# --container container://<container-name>/config/repo, where <container-name>
+# is the name reported by `docker compose ps --format '{{.Names}}'`.
+#
+# NOTES
+# * The host port is intentionally random and bound to 127.0.0.1 only, like the
+#   lab command, so the sshd is never exposed on the network.
+# * The workspace root is not initialized by the image itself; run the
+#   `docker compose exec` step above once, or use `devx lab up` which does it
+#   automatically.
+
+services:
+  remote-workspace:
+    image: ${DEVX_E2E_IMAGE:-lscr.io/linuxserver/openssh-server:latest}
+    restart: "no"
+    environment:
+      PUID: "1000"          # matches lab.py / the e2e suite (files owned by devx user)
+      PGID: "1000"
+      TZ: "UTC"
+      PASSWORD_ACCESS: "true"
+      USER_PASSWORD: "devxpass"
+      USER_NAME: "devx"
+    ports:
+      # IP:empty-host-port:container-port -> random loopback-only host port.
+      - "127.0.0.1::2222"

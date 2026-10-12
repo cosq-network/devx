@@ -476,7 +476,9 @@ devx lab down devx-lab-a1b2c3d4
 ```
 
 `lab up` prints ready-to-paste `--remote` and `--container` URIs backed by the
-same container image the SSH end-to-end test suite uses.
+same container image the SSH end-to-end test suite uses. For a declarative,
+inspectable alternative, `docker-compose.yml` in the repo root boots the same
+workspace (`docker compose up -d`).
 
 ### `devx changes`
 
