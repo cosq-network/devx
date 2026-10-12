@@ -51,8 +51,6 @@ if typer is not None:
         model: str,
         base_url: str,
         embeddings: bool,
-        test_cmd: str = "",
-        lint_cmd: str = "",
         config_path: Path | None = None,
         env_path: Path | None = None,
     ) -> None:
@@ -62,8 +60,6 @@ if typer is not None:
         typer.echo(f"  Model: {model}")
         typer.echo(f"  Base URL: {base_url}")
         typer.echo(f"  Embeddings: {embeddings}")
-        typer.echo(f"  Test command: {test_cmd or 'auto-detect'}")
-        typer.echo(f"  Lint command: {lint_cmd or 'none'}")
         if config_path:
             typer.echo(f"\nProject config: {config_path}")
         if env_path:
@@ -546,13 +542,10 @@ if typer is not None:
         api_key: str | None = typer.Option(None, "--api-key", "-k", help="API key"),
         base_url: str | None = typer.Option(None, "--base-url", "-u", help="Base URL for API"),
         embeddings: bool = typer.Option(False, "--embeddings", "-e", help="Enable local embeddings for semantic search"),
-        test_cmd: str | None = typer.Option(None, "--test-cmd", "-t", help="Test command (auto-detected if not provided)"),
-        lint_cmd: str | None = typer.Option(None, "--lint-cmd", "-l", help="Lint command"),
         non_interactive: bool = typer.Option(False, "--non-interactive", "-y", help="Skip prompts, use defaults"),
     ):
         """Initialize devx configuration for the current project."""
         from devx.configuration import PROVIDERS, apply_init, catalog_models
-        from devx.harness.testing import detect_test_command
         from pathlib import Path
         import json
 
@@ -566,8 +559,6 @@ if typer is not None:
             and model is None
             and api_key is None
             and base_url is None
-            and test_cmd is None
-            and lint_cmd is None
             and not embeddings
             and _is_interactive_tty()
         )
@@ -638,19 +629,6 @@ if typer is not None:
         if base_url is None:
             base_url = provider_info["base_url"] or typer.prompt("Base URL", default="http://localhost:4000/v1")
 
-        # Test command
-        if test_cmd is None:
-            detected = detect_test_command(workspace)
-            if detected and not non_interactive:
-                use_detected = typer.confirm(f"Detected test command: {detected}. Use it?", default=True)
-                test_cmd = detected if use_detected else typer.prompt("Test command", default="")
-            elif detected:
-                test_cmd = detected
-
-        # Lint command
-        if lint_cmd is None and not non_interactive:
-            lint_cmd = typer.prompt("Lint command (optional)", default="")
-
         # Embeddings
         if not embeddings and not non_interactive:
             embeddings = typer.confirm("Enable local embeddings for semantic search?", default=False)
@@ -663,8 +641,6 @@ if typer is not None:
             api_key=api_key or "",
             base_url=base_url or "",
             embeddings=embeddings,
-            test_cmd=test_cmd or "",
-            lint_cmd=lint_cmd or "",
             project=project_config,
         )
         _print_init_summary(**result)

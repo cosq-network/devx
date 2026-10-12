@@ -31,13 +31,11 @@ class TestApplyInit:
             api_key="sk-test",
             base_url="https://api.openai.com/v1",
             embeddings=True,
-            test_cmd="pytest tests/",
-            lint_cmd="ruff check",
         )
 
         project = json.loads((tmp_path / ".devx" / "config.json").read_text(encoding="utf-8"))
-        assert project["test_command"] == "pytest tests/"
-        assert project["lint_command"] == "ruff check"
+        assert "test_command" not in project
+        assert "lint_command" not in project
         assert project["context_compaction"] == {
             "enabled": True,
             "max_messages": 24,
@@ -62,14 +60,16 @@ class TestApplyInit:
     def test_merges_existing_project_config(self, tmp_path: Path):
         devx_dir = tmp_path / ".devx"
         devx_dir.mkdir()
-        (devx_dir / "config.json").write_text(json.dumps({"policy_preset": "strict"}), encoding="utf-8")
+        (devx_dir / "config.json").write_text(
+            json.dumps({"policy_preset": "strict", "test_command": "pytest"}), encoding="utf-8"
+        )
 
         apply_init(tmp_path, provider="ollama", model="qwen2.5-coder:7b", api_key="ollama")
 
         project = json.loads((devx_dir / "config.json").read_text(encoding="utf-8"))
         assert project["policy_preset"] == "strict"
-        assert project["test_command"] == ""
-        assert project["lint_command"] == ""
+        # Pre-existing test/lint commands are preserved, not clobbered by init.
+        assert project["test_command"] == "pytest"
 
     def test_embeddings_false_and_blank_prompt_fields(self, tmp_path: Path):
         apply_init(tmp_path, provider="ollama", model="qwen2.5-coder:7b", api_key="ollama")
@@ -128,8 +128,7 @@ class TestValidateInit:
 
 class TestProjectPrefill:
     def test_no_config(self, tmp_path: Path):
-        prefill = project_prefill(tmp_path)
-        assert prefill == {"test_command": "", "lint_command": "", "project": {}}
+        assert project_prefill(tmp_path) == {}
 
     def test_existing_config(self, tmp_path: Path):
         devx_dir = tmp_path / ".devx"
@@ -137,16 +136,16 @@ class TestProjectPrefill:
         (devx_dir / "config.json").write_text(
             json.dumps({"test_command": "pytest", "policy_preset": "strict"}), encoding="utf-8"
         )
-        prefill = project_prefill(tmp_path)
-        assert prefill["test_command"] == "pytest"
-        assert prefill["lint_command"] == ""
-        assert prefill["project"] == {"test_command": "pytest", "policy_preset": "strict"}
+        assert project_prefill(tmp_path) == {
+            "test_command": "pytest",
+            "policy_preset": "strict",
+        }
 
     def test_invalid_config(self, tmp_path: Path):
         devx_dir = tmp_path / ".devx"
         devx_dir.mkdir()
         (devx_dir / "config.json").write_text("not json {", encoding="utf-8")
-        assert project_prefill(tmp_path) == {"test_command": "", "lint_command": "", "project": {}}
+        assert project_prefill(tmp_path) == {}
 
 
 # ── wizard UI (headless Textual pilot) ────────────────────────────────────

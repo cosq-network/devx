@@ -115,11 +115,10 @@ devx init
 ```
 
 The full-screen TUI setup wizard (centered dialog) will:
-1. Detect your project structure and suggest appropriate test commands (e.g. `pytest`, `npm test`, `cargo test`).
-2. Help you select your LLM provider (OpenAI, Anthropic, Google Gemini, Azure, Ollama, OpenRouter).
-3. Let you pick a curated model with tool-calling capabilities and confirm the base URL.
-4. Toggle local embeddings and confirm the test/lint commands devx will run.
-5. Save configuration cleanly into `.devx/config.json` (project settings) and `.env` (credentials).
+1. Help you select your LLM provider (OpenAI, Anthropic, Google Gemini, Azure, Ollama, OpenRouter).
+2. Let you pick a curated model with tool-calling capabilities and confirm the base URL.
+3. Toggle local embeddings.
+4. Save configuration cleanly into `.devx/config.json` (project settings) and `.env` (credentials).
 
 *Tip: For automated setups in CI or Docker scripts, use non-interactive mode (bypasses the wizard):*
 
@@ -341,7 +340,7 @@ devx ask --json "list all public API functions in @src/app.py"
 devx init
 
 # Scripted non-interactive setup
-devx init -p openai -m gpt-4o -k "$API_KEY" -t "pytest tests/" -l "ruff check" -y
+devx init -p openai -m gpt-4o -k "$API_KEY" -y
 
 # Zero-cost setup with OpenRouter free models router
 devx init -p openrouter -m openrouter/free -k "$OPENROUTER_API_KEY" -y

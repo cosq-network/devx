@@ -70,25 +70,19 @@ def validate_init(provider: str, model: str, api_key: str, base_url: str = "") -
 def project_prefill(workspace: Path) -> dict[str, Any]:
     """Read existing project settings (``.devx/config.json``) for the wizard.
 
-    Returns ``test_command``/``lint_command`` prefills plus the raw project
-    dict so it is preserved (merged) when the wizard saves.
+    Returns the raw project dict so it is preserved (merged) when the wizard
+    saves; test/lint commands are no longer configured by ``devx init``.
     """
     path = workspace / ".devx" / "config.json"
     if not path.is_file():
-        return {"test_command": "", "lint_command": "", "project": {}}
+        return {}
     try:
         import json
 
         project = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         project = {}
-    if not isinstance(project, dict):
-        project = {}
-    return {
-        "test_command": str(project.get("test_command", "") or ""),
-        "lint_command": str(project.get("lint_command", "") or ""),
-        "project": project,
-    }
+    return project if isinstance(project, dict) else {}
 
 
 def _settings_prefill(settings: Any | None) -> dict[str, Any]:
@@ -185,12 +179,9 @@ class InitWizard(App):
 
     def compose(self) -> ComposeResult:
         from devx.configuration import PROVIDERS, catalog_models
-        from devx.harness.testing import detect_test_command
         from devx.tui.components.modals import model_options
 
         prefill = _settings_prefill(self._settings)
-        project = project_prefill(self._workspace)
-        detected = detect_test_command(self._workspace) or ""
 
         models = catalog_models(prefill["provider"])
         selected_model = prefill["model"]
@@ -200,9 +191,8 @@ class InitWizard(App):
         with Vertical(id="wizard-dialog"):
             yield Label("Configure devx for this project", id="wizard-title")
             yield Label(
-                "Choose a provider and its coding model, add an API key when needed, "
-                "and confirm the test/lint commands devx will run. Changes are written "
-                "to .devx/config.json and .env in the current directory.",
+                "Choose a provider and its coding model, and add an API key when "
+                "needed. Changes are written to .env in the current directory.",
                 id="wizard-help",
             )
             yield Select(
@@ -232,18 +222,6 @@ class InitWizard(App):
                 "Enable local embeddings for semantic search",
                 value=prefill["embeddings"],
                 id="wizard-embeddings",
-            )
-            yield Input(
-                value=project["test_command"] or detected,
-                placeholder=(
-                    f"Test command (detected: {detected})" if detected else "Test command (auto-detect)"
-                ),
-                id="wizard-test-cmd",
-            )
-            yield Input(
-                value=project["lint_command"],
-                placeholder="Lint command (optional)",
-                id="wizard-lint-cmd",
             )
             yield Label("", id="wizard-error")
             with Horizontal(id="wizard-actions"):
@@ -304,8 +282,6 @@ class InitWizard(App):
             return
 
         embeddings = bool(self.query_one("#wizard-embeddings", Checkbox).value)
-        test_cmd = self.query_one("#wizard-test-cmd", Input).value.strip()
-        lint_cmd = self.query_one("#wizard-lint-cmd", Input).value.strip()
         effective_key = api_key or ("ollama" if provider == "ollama" else "")
         try:
             self.result = apply_init(
@@ -315,9 +291,7 @@ class InitWizard(App):
                 api_key=effective_key,
                 base_url=base_url,
                 embeddings=embeddings,
-                test_cmd=test_cmd,
-                lint_cmd=lint_cmd,
-                project=project_prefill(self._workspace)["project"],
+                project=project_prefill(self._workspace),
             )
         except Exception as exc:  # ConfigurationError / OSError surfaced inline
             self.query_one("#wizard-error", Label).update(str(exc))

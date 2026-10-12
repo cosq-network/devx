@@ -174,8 +174,6 @@ def apply_init(
     api_key: str = "",
     base_url: str = "",
     embeddings: bool = False,
-    test_cmd: str = "",
-    lint_cmd: str = "",
     project: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write project-scoped devx configuration for a workspace (``devx init``).
@@ -184,13 +182,15 @@ def apply_init(
     (provider credentials and preferences) inside *workspace*, merging any
     existing project configuration. This is the single write path shared by the
     CLI ``devx init`` command and the TUI setup wizard so both produce identical
-    files.
+    files. Test/lint commands are intentionally not part of ``init``: any
+    existing ``test_command``/``lint_command`` in ``.devx/config.json`` is
+    preserved by the merge.
 
-    Returns a summary dict (``provider``, ``model``, ``base_url``, ``embeddings``,
-    ``test_cmd``, ``lint_cmd``, ``config_path``, ``env_path``) for the CLI banner
-    and wizard success screen. Raises :class:`ConfigurationError` for unknown
-    providers or empty model identifiers; a missing API key is *not* an error so
-    scripted ``--non-interactive`` onboarding (and Ollama) can proceed without one.
+    Returns a summary dict (``provider``, ``model``, ``base_url``,
+    ``embeddings``, ``config_path``, ``env_path``) for the CLI banner and wizard
+    success screen. Raises :class:`ConfigurationError` for unknown providers or
+    empty model identifiers; a missing API key is *not* an error so scripted
+    ``--non-interactive`` onboarding (and Ollama) can proceed without one.
     """
     name = provider.lower().strip()
     if name not in PROVIDERS:
@@ -214,8 +214,6 @@ def apply_init(
     project_config.update(project or {})
     project_config.update(
         {
-            "test_command": test_cmd or "",
-            "lint_command": lint_cmd or "",
             "context_compaction": {
                 "enabled": True,
                 "max_messages": 24,
@@ -244,8 +242,6 @@ def apply_init(
         "model": model.strip(),
         "base_url": resolved_base_url,
         "embeddings": embeddings_enabled,
-        "test_cmd": test_cmd or "",
-        "lint_cmd": lint_cmd or "",
         "config_path": config_path,
         "env_path": env_path,
     }
