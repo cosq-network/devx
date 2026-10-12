@@ -114,13 +114,14 @@ Run the initialization wizard in your project root:
 devx init
 ```
 
-The interactive wizard will:
+The full-screen TUI setup wizard (centered dialog) will:
 1. Detect your project structure and suggest appropriate test commands (e.g. `pytest`, `npm test`, `cargo test`).
 2. Help you select your LLM provider (OpenAI, Anthropic, Google Gemini, Azure, Ollama, OpenRouter).
-3. Let you pick a curated model with tool-calling capabilities.
-4. Save configuration cleanly into `.devx/config.json` (project settings) and `.env` (credentials).
+3. Let you pick a curated model with tool-calling capabilities and confirm the base URL.
+4. Toggle local embeddings and confirm the test/lint commands devx will run.
+5. Save configuration cleanly into `.devx/config.json` (project settings) and `.env` (credentials).
 
-*Tip: For automated setups in CI or Docker scripts, use non-interactive mode:*
+*Tip: For automated setups in CI or Docker scripts, use non-interactive mode (bypasses the wizard):*
 
 ```bash
 # With OpenAI:
@@ -336,7 +337,7 @@ devx ask --json "list all public API functions in @src/app.py"
 ### `devx init`
 
 ```bash
-# Interactive setup
+# Full-screen TUI setup wizard
 devx init
 
 # Scripted non-interactive setup

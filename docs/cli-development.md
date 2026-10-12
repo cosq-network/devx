@@ -392,7 +392,8 @@ devx --help
 ## Initialize a project
 
 Run the interactive onboarding wizard to configure providers, curated tool-calling
-models, test frameworks, and local settings:
+models, test frameworks, and local settings (a full-screen TUI setup wizard opens
+when run without flags on a terminal):
 
 ```bash
 devx init

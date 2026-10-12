@@ -314,7 +314,7 @@ policy and per-run tool-call budget.
    ```bash
    devx init
    ```
-   *Interactive wizard configures provider, curated tool-calling model, and test commands.*
+   *Opens a full-screen TUI wizard to configure your provider, curated tool-calling model, and test commands — or script it with `--non-interactive` for CI.*
 
 3. **Run diagnostic checks:**
    ```bash
@@ -338,10 +338,12 @@ The `devx` CLI exposes the following commands:
 
 ### `devx init`
 
-Interactive or scripted project initialization wizard.
+Interactive or scripted project initialization wizard. Run with no flags on a
+terminal to open the full-screen TUI setup wizard; pass flags (or
+`--non-interactive`) to skip the wizard and configure directly.
 
 ```bash
-# Interactive wizard
+# Full-screen TUI wizard (provider, model, API key, test/lint commands)
 devx init
 
 # Scripted non-interactive onboarding

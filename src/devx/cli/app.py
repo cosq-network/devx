@@ -38,6 +38,64 @@ if typer is not None:
             raise typer.BadParameter("Install the TUI extra: pip install 'devx-coding-agent[tui]'")  # type: ignore[attr-defined]
         DevTUI(session_id=session).run()
 
+    def _is_interactive_tty() -> bool:
+        """Whether stdin and stdout are real terminals (safe for a TUI)."""
+        try:
+            return bool(sys.stdin.isatty() and sys.stdout.isatty())
+        except (AttributeError, OSError, ValueError):
+            return False
+
+    def _print_init_summary(
+        *,
+        provider: str,
+        model: str,
+        base_url: str,
+        embeddings: bool,
+        test_cmd: str = "",
+        lint_cmd: str = "",
+        config_path: Path | None = None,
+        env_path: Path | None = None,
+    ) -> None:
+        """Print the post-init banner, shared by the CLI and the TUI wizard."""
+        typer.echo("\nConfiguration saved:")
+        typer.echo(f"  Provider: {provider}")
+        typer.echo(f"  Model: {model}")
+        typer.echo(f"  Base URL: {base_url}")
+        typer.echo(f"  Embeddings: {embeddings}")
+        typer.echo(f"  Test command: {test_cmd or 'auto-detect'}")
+        typer.echo(f"  Lint command: {lint_cmd or 'none'}")
+        if config_path:
+            typer.echo(f"\nProject config: {config_path}")
+        if env_path:
+            typer.echo(f"User config: {env_path}")
+        typer.echo("\nRun 'devx doctor' to verify, then 'devx tui' or 'devx ask \"...\"' to start coding.")
+
+    def _launch_init_wizard(workspace: Path) -> bool:
+        """Run the TUI setup wizard for interactive ``devx init``.
+
+        Returns True when the wizard handled the invocation (including an
+        explicit cancel); False when Textual is unavailable so the caller falls
+        back to the prompt-based onboarding flow.
+        """
+        try:
+            import textual  # noqa: F401
+        except ImportError:
+            return False
+        from devx.config import Settings
+        from devx.tui.init_wizard import InitWizard
+
+        try:
+            settings = Settings.load(workspace=workspace)
+        except (OSError, ValueError):
+            settings = None
+        wizard = InitWizard(workspace=workspace, settings=settings)
+        wizard.run()
+        if wizard.cancelled:
+            typer.echo("Setup cancelled - no changes made.")
+        elif wizard.result:
+            _print_init_summary(**wizard.result)
+        return True
+
     def _workspace_backend(remote: str | None, container: str | None):
         """Build an optional remote/container backend from CLI flags."""
         if remote:
@@ -493,12 +551,29 @@ if typer is not None:
         non_interactive: bool = typer.Option(False, "--non-interactive", "-y", help="Skip prompts, use defaults"),
     ):
         """Initialize devx configuration for the current project."""
-        from devx.configuration import UserConfig, PROVIDERS, catalog_models
+        from devx.configuration import PROVIDERS, apply_init, catalog_models
         from devx.harness.testing import detect_test_command
         from pathlib import Path
         import json
 
         workspace = Path.cwd().resolve()
+
+        # Plain interactive `devx init` (no flags, real terminal) opens the TUI
+        # wizard; every flag-bearing or non-interactive call keeps the prompt flow.
+        launch_wizard = (
+            not non_interactive
+            and provider is None
+            and model is None
+            and api_key is None
+            and base_url is None
+            and test_cmd is None
+            and lint_cmd is None
+            and not embeddings
+            and _is_interactive_tty()
+        )
+        if launch_wizard and _launch_init_wizard(workspace):
+            return
+
         typer.echo(f"Initializing devx in: {workspace}")
 
         # Create .devx directory
@@ -580,41 +655,19 @@ if typer is not None:
         if not embeddings and not non_interactive:
             embeddings = typer.confirm("Enable local embeddings for semantic search?", default=False)
 
-        # Write project config
-        project_config.update({
-            "test_command": test_cmd or "",
-            "lint_command": lint_cmd or "",
-            "context_compaction": {
-                "enabled": True,
-                "max_messages": 24,
-                "max_chars": 24000,
-                "summary_chars": 4000
-            }
-        })
-        project_config_path.write_text(json.dumps(project_config, indent=2))
-
-        # Write user config (in project .env)
-        env_path = workspace / ".env"
-        user_config = UserConfig(env_path)
-        user_config.update({
-            "DEVX_PROVIDER": provider,
-            "DEVX_MODEL": model,
-            "DEVX_BASE_URL": base_url,
-            "DEVX_EMBEDDINGS_ENABLED": str(embeddings).lower(),
-        })
-        if api_key:
-            user_config.set_api_key(api_key)
-
-        typer.echo("\nConfiguration saved:")
-        typer.echo(f"  Provider: {provider}")
-        typer.echo(f"  Model: {model}")
-        typer.echo(f"  Base URL: {base_url}")
-        typer.echo(f"  Embeddings: {embeddings}")
-        typer.echo(f"  Test command: {test_cmd or 'auto-detect'}")
-        typer.echo(f"  Lint command: {lint_cmd or 'none'}")
-        typer.echo(f"\nProject config: {project_config_path}")
-        typer.echo(f"User config: {env_path}")
-        typer.echo("\nRun 'devx doctor' to verify, then 'devx tui' or 'devx ask \"...\"' to start coding.")
+        # Write project config + user config through the shared init path.
+        result = apply_init(
+            workspace,
+            provider=provider,
+            model=model,
+            api_key=api_key or "",
+            base_url=base_url or "",
+            embeddings=embeddings,
+            test_cmd=test_cmd or "",
+            lint_cmd=lint_cmd or "",
+            project=project_config,
+        )
+        _print_init_summary(**result)
 
     @app.command()
     def metrics(

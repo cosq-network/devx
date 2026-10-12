@@ -2,6 +2,8 @@
 
 ## Unreleased (0.2.0-dev.0)
 
+- Added a full-screen TUI setup wizard for `devx init`: plain `devx init` (no flags, interactive terminal) now opens a centered Textual dialog to pick provider/model, enter the API key, toggle embeddings, and confirm auto-detected test/lint commands. Flag-based and `--non-interactive` invocations keep the prompt flow unchanged.
+- Added `devx.configuration.apply_init()` as the single write path shared by the CLI `devx init` command and the TUI wizard, so both produce identical `.devx/config.json` and `.env` files (and merge existing project config).
 - Fixed `devx init` crashing on Windows: `UserConfig`/`PROVIDERS`/`catalog_models` are now imported from `devx.configuration` (they are not part of `devx.config`'s `Settings` module).
 - Fixed a Windows console crash class: CLI status output (`doctor`, `health`, `verify`, `init`, `report`) no longer prints glyphs the legacy cp1252 console cannot encode (`✓`/`✗`/`⚠`/`↩`/`→` are now `[ok]`/`[err]`/`[warn]`/`[rev]`/`->`), so piped/redirected output works in any terminal.
 

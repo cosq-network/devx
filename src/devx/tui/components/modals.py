@@ -71,6 +71,19 @@ def copy_to_clipboard(text: str) -> None:
     raise RuntimeError("No clipboard utility found. Install wl-copy, xclip, or xsel.")
 
 
+def model_options(models) -> list[tuple[str, str]]:
+    """Build (label, value) ``Select`` options from curated coding models.
+
+    Only agent-ready models (tool-calling + coding) are offered, matching the
+    setup flows for agent runs.
+    """
+    return [
+        (f"{item.identifier}{' [free]' if item.free else ''}", item.identifier)
+        for item in models
+        if item.agent_ready
+    ]
+
+
 class ApprovalModal(ModalScreen):
     def __init__(self, request: ApprovalRequest, done: Callable[[ApprovalDecision], None]):
         super().__init__()
@@ -184,11 +197,7 @@ class ProviderSetupModal(ModalScreen):
 
     @staticmethod
     def _model_options(models) -> list[tuple[str, str]]:
-        return [
-            (f"{item.identifier}{' [free]' if item.free else ''}", item.identifier)
-            for item in models
-            if item.agent_ready
-        ]
+        return model_options(models)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "setup-exit":

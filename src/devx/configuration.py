@@ -4,6 +4,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -163,6 +164,91 @@ class UserConfig:
                 self.path.unlink()
             except OSError:
                 self.path.write_text("", encoding="utf-8")
+
+
+def apply_init(
+    workspace: Path,
+    *,
+    provider: str,
+    model: str,
+    api_key: str = "",
+    base_url: str = "",
+    embeddings: bool = False,
+    test_cmd: str = "",
+    lint_cmd: str = "",
+    project: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Write project-scoped devx configuration for a workspace (``devx init``).
+
+    Creates ``.devx/config.json`` (non-secret project settings) and ``.env``
+    (provider credentials and preferences) inside *workspace*, merging any
+    existing project configuration. This is the single write path shared by the
+    CLI ``devx init`` command and the TUI setup wizard so both produce identical
+    files.
+
+    Returns a summary dict (``provider``, ``model``, ``base_url``, ``embeddings``,
+    ``test_cmd``, ``lint_cmd``, ``config_path``, ``env_path``) for the CLI banner
+    and wizard success screen. Raises :class:`ConfigurationError` for unknown
+    providers or empty model identifiers; a missing API key is *not* an error so
+    scripted ``--non-interactive`` onboarding (and Ollama) can proceed without one.
+    """
+    name = provider.lower().strip()
+    if name not in PROVIDERS:
+        raise ConfigurationError(f"Unknown provider: {provider}")
+    if not model.strip():
+        raise ConfigurationError("Model identifier must not be empty")
+    resolved_base_url = base_url.strip() or (PROVIDERS[name].get("base_url") or "")
+    embeddings_enabled = bool(embeddings)
+
+    devx_dir = workspace / ".devx"
+    devx_dir.mkdir(parents=True, exist_ok=True)
+    config_path = devx_dir / "config.json"
+    project_config: dict[str, Any] = {}
+    if config_path.is_file():
+        try:
+            raw = json.loads(config_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                project_config.update(raw)
+        except (OSError, ValueError):
+            pass
+    project_config.update(project or {})
+    project_config.update(
+        {
+            "test_command": test_cmd or "",
+            "lint_command": lint_cmd or "",
+            "context_compaction": {
+                "enabled": True,
+                "max_messages": 24,
+                "max_chars": 24000,
+                "summary_chars": 4000,
+            },
+        }
+    )
+    config_path.write_text(json.dumps(project_config, indent=2))
+
+    env_path = workspace / ".env"
+    user_config = UserConfig(env_path)
+    user_config.update(
+        {
+            "DEVX_PROVIDER": name,
+            "DEVX_MODEL": model.strip(),
+            "DEVX_BASE_URL": resolved_base_url,
+            "DEVX_EMBEDDINGS_ENABLED": str(embeddings_enabled).lower(),
+        }
+    )
+    if api_key.strip():
+        user_config.set_api_key(api_key.strip())
+
+    return {
+        "provider": name,
+        "model": model.strip(),
+        "base_url": resolved_base_url,
+        "embeddings": embeddings_enabled,
+        "test_cmd": test_cmd or "",
+        "lint_cmd": lint_cmd or "",
+        "config_path": config_path,
+        "env_path": env_path,
+    }
 
 
 def list_models(base_url: str, api_key: str = "") -> list[ModelInfo]:
