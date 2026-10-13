@@ -31,3 +31,9 @@ def test_textual_command_surface_smoke():
                 await pilot.pause()
 
     asyncio.run(run())
+
+
+def test_ctrl_q_is_bound_to_quit():
+    # The user-guide documents Ctrl+Q as "Quit"; it must exist and route
+    # through our ``action_quit`` override so remote backends are closed.
+    assert ("ctrl+q", "quit", "Quit") in DevxTUI.BINDINGS

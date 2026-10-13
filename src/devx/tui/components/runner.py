@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 import threading
 import uuid
 from typing import TYPE_CHECKING
@@ -24,7 +23,7 @@ class AgentRunner:
         from devx.completion.parser import parse_file_mentions
         from devx.config import Settings
         from devx.harness.approval import ApprovalDecision, ApprovalManager, ApprovalRequest
-        from devx.harness.runtime import CancellationToken
+        from devx.harness.runtime import CancellationToken, RunCancelled
         from devx.harness.session import SessionStore
         from devx.tui.components.modals import ApprovalModal, PlanPreviewModal
 
@@ -57,7 +56,20 @@ class AgentRunner:
                     answer["value"] = decision
                     completed.set()
 
-                self.app.push_screen(ApprovalModal(request, finish))
+                modal = ApprovalModal(request, finish)
+                # Approval callbacks fire inside the agent tool loop, which
+                # runs on a worker thread (``asyncio.to_thread``); Textual
+                # requires UI mutations on its own thread, so marshal the
+                # screen push with ``call_from_thread`` when we are off it.
+                call_from_thread = getattr(self.app, "call_from_thread", None)
+                if callable(call_from_thread):
+                    try:
+                        call_from_thread(self.app.push_screen, modal)
+                    except RuntimeError:
+                        # Already on the app/UI thread.
+                        self.app.push_screen(modal)
+                else:
+                    self.app.push_screen(modal)
                 completed.wait()
                 decision = answer["value"]
                 if decision == ApprovalDecision.CANCEL and self.app._cancellation:
@@ -224,7 +236,12 @@ class AgentRunner:
                 status = result.get("status", "completed")
                 self.app._log(f"[bold]✔ finished: {status}[/bold]")
 
-        except (ImportError, OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+        except RunCancelled:
+            self.app._write("Run cancelled.")
+        except Exception as exc:  # noqa: BLE001 - surface any agent failure in the UI
+            # Broadened from a narrow tuple so an unexpected agent/tool error is
+            # reported in the transcript instead of escaping the worker and
+            # leaving the run indicator stuck.
             self.app._write(f"Agent error: {exc}")
         finally:
             self.app._run_active = False

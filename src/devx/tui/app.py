@@ -66,6 +66,7 @@ class DevTUI(App):
         ("ctrl+insert", "copy_transcript", "Copy"),
         ("f2", "copy_transcript", "Copy"),
         ("ctrl+c", "copy_or_cancel", "Copy/Cancel"),
+        ("ctrl+q", "quit", "Quit"),
     ]
     # Seconds between two Ctrl+C presses that trigger an app quit.
     DOUBLE_CTRL_C_WINDOW: ClassVar[float] = 1.5

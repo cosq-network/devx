@@ -192,11 +192,11 @@ class ProviderSetupModal(ModalScreen):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "setup-exit":
-            self.app.exit()
+            self.app.action_quit()
             return
         if event.button.id != "setup-save":
             return
-        from devx.configuration import ConfigurationError, UserConfig
+        from devx.configuration import ConfigurationError, apply_init
 
         provider = str(self.query_one("#setup-provider", Select).value)
         api_key = self.query_one("#setup-api-key", Input).value.strip()
@@ -213,12 +213,16 @@ class ProviderSetupModal(ModalScreen):
             self.query_one("#setup-error", Label).update("Base URL and model are required.")
             return
         try:
-            workspace_env = self.settings.workspace / ".env"
-            config = UserConfig(workspace_env if workspace_env.is_file() else None)
-            config.set_provider(provider)
-            config.update({"DEVX_BASE_URL": base_url, "DEVX_MODEL": model})
-            if api_key:
-                config.set_api_key(api_key)
+            # Share the exact write path used by ``devx init`` so both produce
+            # identical ``.devx/config.json`` + ``.env`` files (provider base-URL
+            # canonicalization, embeddings flag, and merge semantics included).
+            apply_init(
+                self.settings.workspace,
+                provider=provider,
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
+            )
         except (ConfigurationError, OSError) as exc:
             self.query_one("#setup-error", Label).update(str(exc))
             return

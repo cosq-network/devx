@@ -1134,6 +1134,95 @@ class TestProviderSetupModal:
 
         assert ProviderSetupModal._model_options([]) == []
 
+    def test_save_writes_through_apply_init(self, tmp_path, monkeypatch):
+        """The /setup modal must share the CLI ``devx init`` write path."""
+        from devx.tui.components.modals import ProviderSetupModal
+
+        captured: dict = {}
+
+        def fake_apply_init(workspace, *, provider, model, api_key="", base_url="", embeddings=False, project=None):
+            captured.update(
+                workspace=workspace,
+                provider=provider,
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
+            )
+            return {}
+
+        monkeypatch.setattr("devx.configuration.apply_init", fake_apply_init)
+
+        class _Value:
+            def __init__(self, value):
+                self.value = value
+
+        class _Label:
+            def __init__(self):
+                self.text = ""
+
+            def update(self, text):
+                self.text = text
+
+        class _Button:
+            def __init__(self, id):
+                self.id = id
+
+        settings = Settings(workspace=tmp_path, provider="openrouter", model="openrouter/free")
+        modal = ProviderSetupModal(settings, lambda: None, first_time=False)
+        widgets = {
+            "#setup-provider": _Value("openrouter"),
+            "#setup-api-key": _Value("sk-test-key"),
+            "#setup-base-url": _Value("https://openrouter.ai/api/v1"),
+            "#setup-model": _Value("openrouter/free"),
+            "#setup-error": _Label(),
+        }
+        modal.query_one = lambda selector, *a, **k: widgets[selector]  # type: ignore[method-assign]
+        calls = {"done": 0, "dismiss": 0}
+        modal.done = lambda: calls.__setitem__("done", calls["done"] + 1)  # type: ignore[method-assign]
+        modal.dismiss = lambda: calls.__setitem__("dismiss", calls["dismiss"] + 1)  # type: ignore[method-assign]
+
+        modal.on_button_pressed(SimpleNamespace(button=_Button("setup-save")))
+
+        assert captured == {
+            "workspace": tmp_path,
+            "provider": "openrouter",
+            "model": "openrouter/free",
+            "api_key": "sk-test-key",
+            "base_url": "https://openrouter.ai/api/v1",
+        }
+        assert calls == {"done": 1, "dismiss": 1}
+
+    def test_exit_button_quits_via_action_quit(self, tmp_path, monkeypatch):
+        """The Exit button must run app cleanup (``action_quit``), not bare exit."""
+        from devx.tui.components.modals import ProviderSetupModal
+
+        class _Button:
+            def __init__(self, id):
+                self.id = id
+
+        class _App:
+            def __init__(self):
+                self.quit_calls = 0
+                self.exit_calls = 0
+
+            def action_quit(self):
+                self.quit_calls += 1
+
+            def exit(self):
+                self.exit_calls += 1
+
+        settings = Settings(workspace=tmp_path, provider="openrouter", model="openrouter/free")
+        modal = ProviderSetupModal(settings, lambda: None, first_time=False)
+        app = _App()
+        # ``app`` is a read-only Textual property; patch it on the class for this test.
+        monkeypatch.setattr(type(modal), "app", property(lambda self: app), raising=False)
+        modal.dismiss = lambda: None  # type: ignore[method-assign]
+
+        modal.on_button_pressed(SimpleNamespace(button=_Button("setup-exit")))
+
+        assert app.quit_calls == 1
+        assert app.exit_calls == 0
+
 
 # ── AgentRunner (TUI) ────────────────────────────────────────────────────
 
