@@ -173,7 +173,7 @@ pip install -e ".[all]"
 | `embeddings` | numpy, onnxruntime, transformers, sentence-transformers | Local ONNX embeddings |
 | `tracing` | langsmith | LangSmith tracing |
 | `dev` | pytest, pytest-cov, ruff, pyright | Development tools |
-| `all` | all of the above | Full installation |
+| `all` | all runtime extras above (excludes `dev`) | Full runtime installation |
 
 ### Make `devx` command available on any directory
 
@@ -244,7 +244,7 @@ Both `DEVX_*` and legacy `DEV_*` variable names are supported, with `DEVX_*` tak
 | `DEVX_EMBEDDINGS_ENABLED` | `false` | Enable local ONNX embeddings for token optimization |
 | `DEVX_EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Local embedding model identifier |
 | `DEVX_EMBEDDING_CACHE_DIR` | `~/.cache/devx/embeddings` | Local embedding model cache directory |
-| `DEVX_EMBEDDINGS_OFFLINE` | `false` | Prevent embedding model downloads |
+| `DEVX_EMBEDDINGS_OFFLINE` | `true` | Prevent embedding model downloads |
 | `LANGSMITH_TRACING` | `false` | Enable LangSmith tracing |
 
 ### Example `~/.devx/config.env`
@@ -357,8 +357,6 @@ devx init --provider openai --model gpt-4o --api-key "$API_KEY" --non-interactiv
 | `-k, --api-key` | Provider API key |
 | `-u, --base-url` | Custom base URL endpoint |
 | `-e, --embeddings` | Enable local ONNX embeddings for semantic search |
-| `-t, --test-cmd` | Test command (auto-detected if omitted) |
-| `-l, --lint-cmd` | Optional linter command |
 | `-y, --non-interactive` | Skip prompts and use defaults |
 
 ### `devx ask`
@@ -398,7 +396,7 @@ devx tui
 
 ### `devx doctor`
 
-Run a diagnostic check to verify configuration, provider connectivity, and dependencies.
+Run a diagnostic check covering the workspace, session/cache databases, provider settings, and optional dependencies.
 
 ```bash
 devx doctor
@@ -595,7 +593,7 @@ Launch the TUI with `devx tui`.
 - **Slash commands** — Control sessions and agent behavior (see below)
 - **Approval prompts** — Inline approval requests for writes and commands
 - **Approval previews** — Bounded proposed diffs are shown before file mutations
-- **Session management** — Resume, create, and delete sessions from the sidebar
+- **Session management** — Resume, create, and delete sessions
 - **Diff and recovery** — Inspect the current Git diff with `/diff` and undo the last run with `/undo`
 - **Cancellation** — Stop an active run with `/cancel` or `Ctrl+C`; press `Ctrl+C` twice to quit the TUI
 
@@ -667,7 +665,7 @@ For the full model, see [Threat model](docs/threat-model.md) and
 ### Clone the repository
 
 ```bash
-git clone https://github.com/your-org/devx-coding-agent.git
+git clone https://github.com/cosq-network/devx.git
 cd devx
 ```
 

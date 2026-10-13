@@ -32,7 +32,9 @@ jobs:
     permissions:
       contents: read
       # Mandatory for OIDC trusted publishing: without this the action cannot
-      # mint the token it uses to identify itself to PyPI.
+      # mint the token it uses to identify itself to PyPI. The same token
+      # signs the PEP 740 attestations (``attestations: true`` below), so no
+      # separate ``attestations: write`` permission is needed.
       id-token: write
     steps:
       - uses: actions/download-artifact@v4

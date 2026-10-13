@@ -683,7 +683,7 @@ The agent harness decouples file operations and process execution behind the `Wo
 
 ```bash
 # From source
-git clone https://github.com/your-org/devx-coding-agent.git
+git clone https://github.com/cosq-network/devx.git
 cd devx
 pip install -e .
 
