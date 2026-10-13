@@ -16,7 +16,13 @@ def _load_env_file(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     if not path.is_file():
         return values
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        # An unreadable or non-UTF-8 .env must not crash every Settings.load();
+        # treat it as empty so the rest of the environment still resolves.
+        return values
+    for raw in lines:
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -54,18 +60,6 @@ CONTEXT_SUMMARY_MIN_CHARS = 128
 
 # Secret-scan behavior for agent reads
 SECRET_SCAN_MODE_DEFAULT = "warn"  # off | warn | redact | block
-
-# Context budget modes
-CONTEXT_BUDGET_MODE_FIXED = "fixed"
-CONTEXT_BUDGET_MODE_ADAPTIVE = "adaptive"
-
-# Priority levels for message retention
-CONTEXT_PRIORITY_CRITICAL = "critical"
-CONTEXT_PRIORITY_HIGH = "high"
-CONTEXT_PRIORITY_NORMAL = "normal"
-CONTEXT_PRIORITY_LOW = "low"
-CONTEXT_PRIORITY_MIN = 0
-CONTEXT_PRIORITY_MAX = 100
 
 # Context budget modes
 CONTEXT_BUDGET_MODE_FIXED = "fixed"

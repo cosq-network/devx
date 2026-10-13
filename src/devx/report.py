@@ -14,12 +14,13 @@ from devx.harness.session import SessionStore
 from devx.pricing import format_cost
 
 
-def build_report(store: SessionStore, journal: Any, identifier: str) -> dict[str, Any]:
+def build_report(store: SessionStore, journal: Any, identifier: str, backend=None) -> dict[str, Any]:
     """Build a structured report for a session (id/name) or a run id.
 
     ``identifier`` is resolved either as a saved session (via the session store)
     or as a run id searched across sessions. Raises ``KeyError`` when neither
-    matches.
+    matches. ``backend`` (an optional remote/container workspace) is threaded
+    into change verification so hashes are compared against the real workspace.
     """
     loaded = store.load(identifier)
     if loaded is not None:
@@ -45,7 +46,7 @@ def build_report(store: SessionStore, journal: Any, identifier: str) -> dict[str
 
     usage = store.aggregate_usage(run_id=run_id) if run_id else store.aggregate_usage(session_id)
     changes = journal.for_run(run_id) if run_id else []
-    verified = {entry["path"]: entry["status"] for entry in journal.verify(run_id)} if run_id else {}
+    verified = {entry["path"]: entry["status"] for entry in journal.verify(run_id, backend=backend)} if run_id else {}
 
     change_rows: list[dict[str, Any]] = []
     for change in changes:

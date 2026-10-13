@@ -88,13 +88,30 @@ _SKIP_SUFFIXES = {
 _MAX_SCAN_FILE_BYTES = 1_000_000
 
 
+def mask_secret(value: str, visible: int = 4) -> str:
+    """Mask a matched secret for display/log output.
+
+    Only the first and last ``visible`` characters are kept, joined by ``...``
+    (plain ASCII so the result is safe on cp1252 consoles and in CI logs). The
+    raw value is never returned; callers that need the actual secret for
+    redaction use :func:`_spans` against the original text instead.
+    """
+    if len(value) <= visible * 2:
+        return value
+    return f"{value[:visible]}...{value[-visible:]}"
+
+
 def scan_secrets(data: str) -> list[SecretHit]:
-    """Return every detected secret match in ``data``, with line numbers."""
+    """Return every detected secret match in ``data``, with line numbers.
+
+    ``SecretHit.snippet`` is pre-masked so nothing downstream (CLI output, tool
+    warnings, logs) can echo a live credential.
+    """
     hits: list[SecretHit] = []
     for line_no, line in enumerate(data.splitlines(), start=1):
         for kind, pattern in _PATTERNS:
             for match in pattern.finditer(line):
-                hits.append(SecretHit(kind=kind, line=line_no, snippet=match.group(0)))
+                hits.append(SecretHit(kind=kind, line=line_no, snippet=mask_secret(match.group(0))))
     return hits
 
 

@@ -55,6 +55,23 @@ def test_secret_masking_never_returns_short_or_placeholder_secret():
     assert mask_secret("sk-or-v1-abcdefgh") == "sk-o…efgh"
 
 
+def test_set_provider_clears_stale_base_url_for_custom_url_providers(tmp_path: Path):
+    config = UserConfig(tmp_path / "config.env")
+    config.set_provider("openrouter")  # has a canonical base URL
+    config.set_provider("google")  # no canonical base URL
+    text = config.path.read_text(encoding="utf-8")
+    assert "DEVX_PROVIDER=google" in text
+    assert "DEVX_BASE_URL" not in text
+
+
+def test_set_provider_rewrites_stale_base_url_for_url_providers(tmp_path: Path):
+    config = UserConfig(tmp_path / "config.env")
+    config.update({"DEVX_BASE_URL": "http://stale.example.test"})
+    config.set_provider("openai")
+    text = config.path.read_text(encoding="utf-8")
+    assert "DEVX_BASE_URL=https://api.openai.com/v1" in text
+
+
 def test_model_catalog_contains_only_agent_ready_models_for_each_provider():
     for provider in configuration.PROVIDERS:
         models = catalog_models(provider)

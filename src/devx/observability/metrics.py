@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 
@@ -50,6 +51,7 @@ class MetricsCollector:
             self._histograms[key].append(value)
             self._metrics[name].append(Metric(name, value, labels, metric_type="histogram"))
     
+    @contextmanager
     def timing(self, name: str, labels: dict[str, str] | None = None):
         """Context manager for timing operations."""
         labels = labels or {}
@@ -67,8 +69,8 @@ class MetricsCollector:
         label_str = ",".join(f"{k}={v}" for k, v in sorted(labels.items()))
         return f"{name}{{{label_str}}}"
     
-    def get_metrics(self) -> list[Metric]:
-        """Get all metrics."""
+    def get_metrics(self) -> list[list[Metric]]:
+        """Get all metrics, grouped by metric name."""
         with self._lock:
             return list(self._metrics.values())
     
@@ -90,19 +92,21 @@ class MetricsCollector:
                 lines.append(f"# TYPE {name} gauge")
                 lines.append(f"{name}{label_str} {value}")
             
-            # Export histograms (as summary)
+            # Export histograms with cumulative buckets, sum, and count
+            _buckets_ms = (10.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 5000.0, 10000.0, 30000.0, 60000.0)
             for key, values in self._histograms.items():
                 if not values:
                     continue
                 name, labels = self._parse_key(key)
                 label_str = self._format_labels(labels)
-                count = len(values)
-                sum_val = sum(values)
-                avg = sum_val / count
-                lines.append(f"# TYPE {name} summary")
-                lines.append(f"{name}_count{label_str} {count}")
-                lines.append(f"{name}_sum{label_str} {sum_val}")
-                lines.append(f"{name}_avg{label_str} {avg}")
+                lines.append(f"# TYPE {name} histogram")
+                for bucket in _buckets_ms:
+                    le_labels = self._format_labels({**labels, "le": f"{bucket:g}"})
+                    lines.append(f"{name}_bucket{le_labels} {sum(1 for value in values if value <= bucket)}")
+                le_labels = self._format_labels({**labels, "le": "+Inf"})
+                lines.append(f"{name}_bucket{le_labels} {len(values)}")
+                lines.append(f"{name}_sum{label_str} {sum(values)}")
+                lines.append(f"{name}_count{label_str} {len(values)}")
         
         return "\n".join(lines)
     
@@ -120,10 +124,15 @@ class MetricsCollector:
         return name, labels
     
     def _format_labels(self, labels: dict[str, str]) -> str:
-        """Format labels for Prometheus."""
+        """Format labels for Prometheus, escaping label values."""
         if not labels:
             return ""
-        return "{" + ",".join(f'{k}="{v}"' for k, v in sorted(labels.items())) + "}"
+        return "{" + ",".join(f'{k}="{self._escape_label_value(v)}"' for k, v in sorted(labels.items())) + "}"
+
+    @staticmethod
+    def _escape_label_value(value: str) -> str:
+        """Escape a label value per the Prometheus text exposition format."""
+        return value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
 
 
 # Global metrics collector

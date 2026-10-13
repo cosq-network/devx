@@ -34,10 +34,16 @@ PRICING: dict[str, ModelPrice] = {
     "o3": ModelPrice(2.00, 8.00),
     "claude-3-5-sonnet": ModelPrice(3.00, 15.00),
     "claude-3-5-haiku": ModelPrice(0.80, 4.00),
+    "claude-3-7-sonnet": ModelPrice(3.00, 15.00),
+    "claude-3.7-sonnet": ModelPrice(3.00, 15.00),
     "claude-3-opus": ModelPrice(15.00, 75.00),
     "claude-sonnet-4": ModelPrice(3.00, 15.00),
     "claude-opus-4": ModelPrice(15.00, 75.00),
     "claude-haiku": ModelPrice(0.80, 4.00),
+    "qwen-2.5-coder": ModelPrice(0.20, 0.60),
+    # Local (Ollama) models cost nothing to run.
+    "qwen2.5-coder": ModelPrice(0.0, 0.0),
+    "llama3.1:8b": ModelPrice(0.0, 0.0),
     "gemini-1.5-flash": ModelPrice(0.075, 0.30),
     "gemini-1.5-pro": ModelPrice(1.25, 5.00),
     "gemini-2.0-flash": ModelPrice(0.10, 0.40),
@@ -48,8 +54,9 @@ PRICING: dict[str, ModelPrice] = {
 }
 
 # Markers that identify a free (zero-cost) identifier, e.g. OpenRouter's
-# ``openrouter/free`` router or the ``:free`` suffixes.
-FREE_MARKERS = (":free", "openrouter/free", "-free")
+# ``openrouter/free`` router or the ``:free`` suffixes. ``-free`` is
+# intentionally NOT matched: it is too loose and can hit unrelated names.
+FREE_MARKERS = (":free", "openrouter/free")
 
 
 def price_for(model: str) -> ModelPrice | None:

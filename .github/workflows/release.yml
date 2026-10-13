@@ -25,30 +25,8 @@ jobs:
           path: dist/
           retention-days: 1
 
-  sign:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-      - name: Sign distributions with Sigstore
-        uses: sigstore/gh-action-sigstore-python@v2.1.1
-        with:
-          python-version: '3.12'
-      - uses: actions/upload-artifact@v4
-        with:
-          name: signed-dist
-          path: dist/
-          retention-days: 1
-
   publish:
-    needs: sign
+    needs: build
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -59,12 +37,17 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: signed-dist
+          name: dist
           path: dist/
       - name: Publish package distributions to PyPI
+        # ``attestations: true`` replaces hand-rolled Sigstore sidecars: the
+        # action signs the distributions with OIDC and PyPI attaches the
+        # provenance automatically (no .sigstore files to manage, and twine
+        # only ever sees real distributions in dist/).
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           verify-metadata: true
+          attestations: true
 
   generate-sbom:
     needs: build

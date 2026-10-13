@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -142,19 +143,43 @@ class TestConfigureLogging:
         capsys.readouterr()
 
 
+@pytest.fixture
+def isolate_tracing_env():
+    """Isolate tracing env vars and the langsmith logger for each test.
+
+    ``configure_tracing`` writes straight to ``os.environ``; a later
+    ``monkeypatch.delenv`` would capture the *mutated* value and restore it at
+    teardown, leaking ``LANGSMITH_TRACING`` into other test modules. Snapshot and
+    clear the real environment instead, then restore it afterwards.
+    """
+    logger = logging.getLogger("langsmith")
+    before_level = logger.level
+    keys = ("LANGSMITH_TRACING", "LANGSMITH_PROJECT", "LANGCHAIN_PROJECT")
+    saved = {key: os.environ[key] for key in keys if key in os.environ}
+    for key in keys:
+        os.environ.pop(key, None)
+    yield
+    for key in keys:
+        os.environ.pop(key, None)
+    os.environ.update(saved)
+    logger.setLevel(before_level)
+
+
 class TestConfigureTracing:
-    def test_disabled_is_noop(self):
+    def test_disabled_is_noop(self, isolate_tracing_env):
         obs.configure_tracing(Settings(tracing_enabled=False))
         assert logging.getLogger("langsmith").level == logging.NOTSET
+        assert "LANGSMITH_TRACING" not in os.environ
 
-    def test_enabled_with_langsmith_installed(self, monkeypatch):
+    def test_enabled_with_langsmith_installed(self, monkeypatch, isolate_tracing_env):
         monkeypatch.setattr(
             "importlib.util.find_spec", lambda name: object() if name == "langsmith" else None
         )
-        obs.configure_tracing(Settings(tracing_enabled=True))
+        result = obs.configure_tracing(Settings(tracing_enabled=True))
+        assert result == {"LANGSMITH_TRACING": "true", "LANGSMITH_PROJECT": "devx-coding-agent"}
         assert logging.getLogger("langsmith").level == logging.INFO
 
-    def test_enabled_without_langsmith_warns(self, monkeypatch, caplog):
+    def test_enabled_without_langsmith_warns(self, monkeypatch, caplog, isolate_tracing_env):
         monkeypatch.setattr("importlib.util.find_spec", lambda name: None)
         with caplog.at_level(logging.WARNING, logger="devx.observability"):
             obs.configure_tracing(Settings(tracing_enabled=True))

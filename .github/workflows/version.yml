@@ -85,4 +85,4 @@ jobs:
           fi
         env:
           VERSION: ${{ needs.version.outputs.version }}
-          VERSION_BRANCH: ${{ github.ref_name }}
+          VERSION_BRANCH: ${{ inputs.branch || github.ref_name }}

@@ -121,6 +121,12 @@ class UserConfig:
         values = {"DEVX_PROVIDER": name}
         if details["base_url"]:
             values["DEVX_BASE_URL"] = details["base_url"]
+        else:
+            # Providers without a canonical base URL (google, azure) must not
+            # keep a stale URL from the previous provider. Remove the keys
+            # rather than writing an empty ``DEVX_BASE_URL=``, which would
+            # override Settings' default with an empty string.
+            self.reset(("DEVX_BASE_URL", "DEV_BASE_URL"))
         self.update(values)
 
     def set_model(self, model: str) -> None:
@@ -212,16 +218,19 @@ def apply_init(
         except (OSError, ValueError):
             pass
     project_config.update(project or {})
-    project_config.update(
-        {
-            "context_compaction": {
-                "enabled": True,
-                "max_messages": 24,
-                "max_chars": 24000,
-                "summary_chars": 4000,
-            },
-        }
-    )
+    # Merge (never clobber) context-compaction customization: the user's
+    # existing/requested values win, and any key they did not set keeps the
+    # default. This preserves e.g. ``"enabled": false`` from a prior init.
+    compaction_defaults: dict[str, Any] = {
+        "enabled": True,
+        "max_messages": 24,
+        "max_chars": 24000,
+        "summary_chars": 4000,
+    }
+    provided_compaction = project_config.get("context_compaction")
+    if isinstance(provided_compaction, dict):
+        compaction_defaults.update(provided_compaction)
+    project_config["context_compaction"] = compaction_defaults
     config_path.write_text(json.dumps(project_config, indent=2))
 
     env_path = workspace / ".env"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 import uuid
 from dataclasses import replace
@@ -44,6 +45,19 @@ if typer is not None:
             return bool(sys.stdin.isatty() and sys.stdout.isatty())
         except (AttributeError, OSError, ValueError):
             return False
+
+    def _load_settings() -> Settings:
+        """Load settings, surfacing configuration errors as clean CLI errors.
+
+        Without this, a malformed ``.devx/config.json`` or a bad boolean in the
+        environment crashes commands with a raw traceback. Commands that need to
+        handle configuration problems themselves (e.g. the init wizard) keep
+        calling ``Settings.load()`` directly.
+        """
+        try:
+            return Settings.load()
+        except (ValueError, TypeError) as exc:
+            raise typer.BadParameter(f"Invalid configuration: {exc}") from exc  # type: ignore[attr-defined]
 
     def _print_init_summary(
         *,
@@ -97,7 +111,7 @@ if typer is not None:
         if remote:
             from devx.harness.ssh_backend import SshConfig, SshWorkspaceBackend
 
-            settings = Settings.load()
+            settings = _load_settings()
             ssh_cfg = SshConfig.from_uri(remote)
             if settings.ssh_key_path or settings.ssh_known_hosts or settings.ssh_allow_unknown_keys:
                 ssh_cfg = replace(
@@ -140,7 +154,7 @@ if typer is not None:
         from devx.completion.parser import parse_file_mentions
         from devx.harness.approval import ApprovalManager, ApprovalRequest, matches_allow_rule
         configure_logging(json_output=json_logs)
-        settings = Settings.load()
+        settings = _load_settings()
         if remote:
             object.__setattr__(settings, "remote_ssh", remote)
         if ssh_key:
@@ -240,11 +254,12 @@ if typer is not None:
                     typer.echo("=" * 60)
                     typer.echo(plan)
                     typer.echo("=" * 60)
-                    
-                    if not typer.confirm("\nProceed with this plan?", default=True):
-                        typer.echo("Plan rejected. Exiting.")
-                        result = {**plan_result, "status": "plan_rejected", "result": "Plan rejected by user."}
-                    else:
+
+                    # Skip the confirmation when the plan is pre-approved or when
+                    # stdin is not a terminal (piped/CI runs): typer.confirm would
+                    # otherwise block on EOF or consume input meant for the agent.
+                    approved = approve or not sys.stdin.isatty()
+                    if approved or typer.confirm("\nProceed with this plan?", default=True):
                         # Run full execution with the generated plan
                         # Pass the plan through state.messages so the coder can use it
                         state.messages = plan_result.get("messages", [])
@@ -257,6 +272,9 @@ if typer is not None:
                             session_id=previous["id"] if previous else session,
                             plan_only=False,
                         ).invoke(state)
+                    else:
+                        typer.echo("Plan rejected. Exiting.")
+                        result = {**plan_result, "status": "plan_rejected", "result": "Plan rejected by user."}
             else:
                 # Direct execution mode
                 result = build_supervisor_graph(
@@ -288,9 +306,9 @@ if typer is not None:
             usage_entries = get_token_tracker().drain()
             if usage_entries:
                 store.record_usage(previous["id"] if previous else saved_id, run_id, usage_entries)
-        except Exception:
-            pass
-        print(json.dumps(result) if json_output else result["result"])
+        except Exception as exc:  # noqa: BLE001 - usage persistence must never break the run
+            logging.getLogger("devx.cli").warning("Failed to record token usage: %s", exc)
+        print(json.dumps(result, default=str) if json_output else result["result"])
 
     @app.command()
     def sessions():
@@ -337,13 +355,21 @@ if typer is not None:
                     typer.echo(f"ID: {entry['id']} | Session: {entry['session_id'][:8]} | Run: {entry['run_id'][:8]} | Retries: {entry['retry_count']} | {entry['created_at']}")
                     typer.echo(f"  Error: {entry['error'][:200]}...")
         elif action == "dlq-retry" and identifier:
-            entry = store.retry_dlq_entry(int(identifier))
+            try:
+                entry_id = int(identifier)
+            except ValueError:
+                raise typer.BadParameter(f"DLQ entry id must be an integer: {identifier}") from None  # type: ignore[attr-defined]
+            entry = store.retry_dlq_entry(entry_id)
             if not entry:
                 raise typer.BadParameter(f"DLQ entry not found: {identifier}")  # type: ignore[attr-defined]
             typer.echo(f"Retrying DLQ entry {identifier} for session {entry['session_id'][:8]}")
             typer.echo(f"State keys: {list(entry['state'].keys())}")
         elif action == "dlq-remove" and identifier:
-            if not store.remove_dlq_entry(int(identifier)):
+            try:
+                entry_id = int(identifier)
+            except ValueError:
+                raise typer.BadParameter(f"DLQ entry id must be an integer: {identifier}") from None  # type: ignore[attr-defined]
+            if not store.remove_dlq_entry(entry_id):
                 raise typer.BadParameter(f"DLQ entry not found: {identifier}")  # type: ignore[attr-defined]
             typer.echo(f"Removed DLQ entry {identifier}")
         else:
@@ -484,6 +510,9 @@ if typer is not None:
         )
         namespace = f"{settings.provider}:{settings.model}:{settings.embedding_model}"
         cache = SemanticCache(settings.cache_db, embedder=embedder, namespace=namespace)
+        if force:
+            cleared = cache.clear(namespace=namespace)
+            typer.echo(f"Cleared {cleared} previously cached entries (forced re-index)")
 
         files = discover_project_files(settings.workspace, max_files=5000)
         typer.echo(f"Found {len(files)} files to index")
@@ -585,8 +614,11 @@ if typer is not None:
             typer.echo("\nAvailable providers:")
             for i, (name, info) in enumerate(sorted(PROVIDERS.items()), 1):
                 typer.echo(f"  {i}. {name} ({info['base_url'] or 'custom'})")
+            providers = sorted(PROVIDERS.keys())
             choice = typer.prompt("Select provider", type=int, default=1)
-            provider = sorted(PROVIDERS.keys())[choice - 1]
+            if not 1 <= choice <= len(providers):
+                raise typer.BadParameter(f"Provider choice must be between 1 and {len(providers)}")  # type: ignore[attr-defined]
+            provider = providers[choice - 1]
         elif provider is None:
             provider = "openai"
 
@@ -612,6 +644,8 @@ if typer is not None:
                     tag_str = f" [{', '.join(tags)}]" if tags else ""
                     typer.echo(f"  {i}. {m.identifier}{tag_str}")
                 choice = typer.prompt("Select model", type=int, default=1)
+                if not 1 <= choice <= len(models):
+                    raise typer.BadParameter(f"Model choice must be between 1 and {len(models)}")  # type: ignore[attr-defined]
                 model = models[choice - 1].identifier
             else:
                 model = typer.prompt("Model name", default="gpt-4o")
@@ -625,9 +659,14 @@ if typer is not None:
         elif api_key is None and provider == "ollama":
             api_key = "ollama"
 
-        # Base URL
+        # Base URL: prompt only for providers without a canonical URL, and only
+        # when an interactive terminal is available. Non-interactive runs keep
+        # the provider default ("" for google/azure, resolved by apply_init).
         if base_url is None:
-            base_url = provider_info["base_url"] or typer.prompt("Base URL", default="http://localhost:4000/v1")
+            if provider_info["base_url"] or non_interactive or not _is_interactive_tty():
+                base_url = provider_info["base_url"]
+            else:
+                base_url = typer.prompt("Base URL", default="http://localhost:4000/v1")
 
         # Embeddings
         if not embeddings and not non_interactive:
@@ -910,22 +949,32 @@ if typer is not None:
         identifier: str = typer.Argument(..., help="Session id/name or run id"),  # type: ignore[attr-defined]
         json_output: bool = typer.Option(False, "--json"),  # type: ignore[attr-defined]
         out: str | None = typer.Option(None, "--out", "-o", help="Write Markdown report to a file"),  # type: ignore[attr-defined]
+        remote: str | None = typer.Option(None, "--remote", "-r", help="Remote SSH workspace URI for change verification"),  # type: ignore[attr-defined]
+        container: str | None = typer.Option(None, "--container", "-c", help="Container workspace URI for change verification"),  # type: ignore[attr-defined]
     ):
         """Render a PR-ready summary of a session or run.
 
         Combines the agent event timeline, hash-guarded change journal, lint/test
-        results, and token cost into one Markdown or JSON report.
+        results, and token cost into one Markdown or JSON report. ``--remote`` /
+        ``--container`` verify change hashes against the actual (remote) workspace.
         """
         from devx.harness.changes import ChangeJournal
         from devx.report import build_report, render_report
 
-        settings = Settings.load()
+        settings = _load_settings()
         store = SessionStore(settings.session_db)
         journal = ChangeJournal(settings.session_db)
+        backend = _workspace_backend(remote, container)
         try:
-            data = build_report(store, journal, identifier)
+            data = build_report(store, journal, identifier, backend=backend)
         except KeyError as exc:
             raise typer.BadParameter(str(exc))  # type: ignore[attr-defined]
+        finally:
+            if backend is not None:
+                try:
+                    backend.close()
+                except Exception:
+                    pass
 
         if json_output:
             print(json.dumps(data, default=str))

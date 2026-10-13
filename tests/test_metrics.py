@@ -36,22 +36,19 @@ class TestMetricsCollector:
         assert collector._histograms["latency_ms"] == [1.5, 2.5]
         assert all(m.metric_type == "histogram" for m in flatten(collector))
 
-    def test_timing_generator_observes_duration(self):
-        # ``timing`` is a bare generator (not decorated with @contextmanager);
-        # driving it with next() and close() exercises the start/finally paths.
+    def test_timing_context_manager_observes_duration(self):
         collector = MetricsCollector()
-        gen = collector.timing("op", labels={"x": "y"})
-        next(gen)
-        gen.close()
+        with collector.timing("op", labels={"x": "y"}):
+            pass
         observed = [m for m in flatten(collector) if m.name == "op"]
         assert len(observed) == 1
         assert observed[0].value >= 0.0
         assert observed[0].labels == {"x": "y"}
         assert observed[0].metric_type == "histogram"
 
-    def test_timing_never_started_records_nothing(self):
+    def test_timing_never_entered_records_nothing(self):
         collector = MetricsCollector()
-        collector.timing("op").close()
+        collector.timing("op")
         assert flatten(collector) == []
 
     def test_export_counter(self):
@@ -68,15 +65,23 @@ class TestMetricsCollector:
         assert "# TYPE workers gauge" in text
         assert "workers 2" in text
 
-    def test_export_histogram_as_summary(self):
+    def test_export_histogram_with_buckets(self):
         collector = MetricsCollector()
         collector.observe("dur", 1.5)
         collector.observe("dur", 2.5)
         text = collector.export_prometheus()
-        assert "# TYPE dur summary" in text
-        assert "dur_count 2" in text
+        assert "# TYPE dur histogram" in text
+        assert 'dur_bucket{le="10"} 2' in text
+        assert 'dur_bucket{le="+Inf"} 2' in text
         assert "dur_sum 4.0" in text
-        assert "dur_avg 2.0" in text
+        assert "dur_count 2" in text
+        assert "dur_avg" not in text
+
+    def test_export_escapes_label_values(self):
+        collector = MetricsCollector()
+        collector.increment("calls", labels={"path": 'a"b\\c\nd'})
+        text = collector.export_prometheus()
+        assert r'calls{path="a\"b\\c\nd"} 1.0' in text
 
     def test_export_formats_labels_sorted(self):
         collector = MetricsCollector()
@@ -97,9 +102,8 @@ class TestGlobalHelpers:
         metrics_mod.increment_counter("devx_runs_total", 1)
         metrics_mod.set_gauge("devx_sessions_active", 3)
         metrics_mod.observe_histogram("devx_llm_calls_duration_ms", 42.0)
-        gen = metrics_mod.timing("devx_runs_duration_ms")
-        next(gen)
-        gen.close()
+        with metrics_mod.timing("devx_runs_duration_ms"):
+            pass
         assert fresh._counters["devx_runs_total"] == 1.0
         assert fresh._gauges["devx_sessions_active"] == 3.0
         assert fresh._histograms["devx_llm_calls_duration_ms"] == [42.0]

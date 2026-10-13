@@ -22,11 +22,17 @@ def test_price_for_exact_and_versioned_models():
 
 
 def test_price_for_free_markers_are_zero_cost():
-    for model in ("openrouter/free", "meta-llama/llama-3.1-8b:free", "some-model-free"):
+    for model in ("openrouter/free", "meta-llama/llama-3.1-8b:free"):
         price = price_for(model)
         assert price is not None
         assert price.input_per_million == 0.0
         assert price.output_per_million == 0.0
+
+
+def test_price_for_dash_free_suffix_is_not_free():
+    # ``-free`` is deliberately NOT a free marker: it is far too loose and can
+    # hit unrelated model names (only ``:free`` and ``openrouter/free`` count).
+    assert price_for("some-model-free") is None
 
 
 def test_price_for_unknown_model_returns_none():
