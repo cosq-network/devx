@@ -143,11 +143,14 @@ class ChangeJournal:
     def _matches(recorded: str, requested: str) -> bool:
         recorded_norm = recorded.replace("\\", "/")
         requested_norm = requested.replace("\\", "/")
-        return (
-            recorded_norm == requested_norm
-            or recorded_norm.endswith("/" + requested_norm)
-            or Path(recorded_norm).name == Path(requested_norm).name
-        )
+        if recorded_norm == requested_norm or recorded_norm.endswith("/" + requested_norm):
+            return True
+        # A request carrying directory components must match by full suffix; only
+        # a bare filename may match on basename alone, so ``sub/a.py`` never
+        # selects an unrelated ``other/a.py``.
+        if "/" in requested_norm.strip("/"):
+            return False
+        return Path(recorded_norm).name == requested_norm.strip("/")
 
     @staticmethod
     def _rel(change: Change, backend: WorkspaceBackend | None) -> str:

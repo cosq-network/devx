@@ -142,6 +142,7 @@ class SshWorkspaceBackend(WorkspaceBackend):
         self._client = client
         self._sftp = sftp
         self._connected = False
+        self._home: str | None = None
         if client is not None:
             self._connected = True
 
@@ -296,24 +297,63 @@ class SshWorkspaceBackend(WorkspaceBackend):
                 self._reset()
         return False
 
+    def _root(self) -> str:
+        """Absolute workspace root, resolving an unset path to the remote home.
+
+        A URI without a path (``user@host``) leaves ``remote_path`` as ``"."``;
+        anchor it to the SFTP-reported working directory once so absolute paths
+        cannot escape an indeterminate root.
+        """
+        raw = self.config.remote_path
+        if raw not in (".", ""):
+            return posixpath.normpath(raw)
+        if self._home is None:
+            canon = self._sftp_normalize(".")
+            if canon is None:
+                raise PermissionError(
+                    "Remote workspace path is not set and the server did not report a working directory"
+                )
+            self._home = canon
+        return self._home
+
+    def _sftp_normalize(self, path: str) -> str | None:
+        """Realpath via SFTP, following symlinks where the server supports it.
+
+        Returns ``None`` when the connection, extension, or target is
+        unavailable so callers fall back to the (still contained) lexical path.
+        """
+        if self._sftp is None:
+            return None
+        try:
+            canon = self._sftp.normalize(path)
+        except Exception:
+            return None
+        if isinstance(canon, str) and canon.startswith("/"):
+            return posixpath.normpath(canon)
+        return None
+
+    @staticmethod
+    def _inside(root: str, path: str) -> bool:
+        if root == "/":
+            return path.startswith("/")
+        return path == root or path.startswith(root + "/")
+
     def _resolve(self, rel_path: str) -> str:
         clean = rel_path.strip().replace("\\", "/")
-        root_norm = posixpath.normpath(self.config.remote_path)
+        root = self._root()
         if clean.startswith("/"):
             # Ensure it starts with remote_path (as a real path boundary, not a
             # string prefix: ``/srv/app2`` must not pass for root ``/srv/app``).
-            clean_norm = posixpath.normpath(clean)
-            if not (root_norm in {".", "/"} or clean_norm == root_norm
-                    or clean_norm.startswith(root_norm + "/")):
-                raise PermissionError(f"Path is outside remote workspace: {clean}")
-            return clean_norm
-        norm = posixpath.normpath(posixpath.join(self.config.remote_path, clean))
-        if root_norm == ".":
-            if norm == ".." or norm.startswith("../"):
-                raise PermissionError(f"Path is outside remote workspace: {rel_path}")
-        elif root_norm != "/" and norm != root_norm and not norm.startswith(root_norm + "/"):
+            norm = posixpath.normpath(clean)
+        else:
+            norm = posixpath.normpath(posixpath.join(root, clean))
+        if not self._inside(root, norm):
             raise PermissionError(f"Path is outside remote workspace: {rel_path}")
-        return norm
+        # Follow symlinks so a link inside the workspace cannot point outside it.
+        canon = self._sftp_normalize(norm)
+        if canon is not None and not self._inside(root, canon):
+            raise PermissionError(f"Path resolves outside remote workspace: {rel_path}")
+        return canon or norm
 
     def read_bytes(self, rel_path: str, max_bytes: int | None = None) -> bytes:
         self._ensure_connected()
@@ -402,7 +442,7 @@ class SshWorkspaceBackend(WorkspaceBackend):
 
     def walk_files(self, max_files: int = 200, code_exts: set[str] | None = None) -> list[str]:
         self._ensure_connected()
-        root = posixpath.normpath(self.config.remote_path)
+        root = self._root()
 
         # Optimization: Attempt single round-trip remote discovery using git or find command
         fast_list = self._fast_remote_file_discovery(root, max_files, code_exts)
@@ -538,7 +578,7 @@ class SshWorkspaceBackend(WorkspaceBackend):
         pgid_path = f"/tmp/devx-pgid-{uuid.uuid4().hex}"
         inner = (
             f"echo $$ > {shlex.quote(pgid_path)}; "
-            f"cd {shlex.quote(self.config.remote_path)} && "
+            f"cd {shlex.quote(self._root())} && "
             f"if [ -f .venv/bin/activate ]; then . .venv/bin/activate; fi && "
             f"{cmd_str}"
         )

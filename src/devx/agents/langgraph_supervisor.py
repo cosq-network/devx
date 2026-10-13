@@ -21,6 +21,7 @@ from devx.harness.session import SessionStore
 from devx.harness.testing import detect_test_command
 from devx.harness.tools import WorkspaceTools
 from devx.llm import create_llm, invoke_with_retry, _is_rate_limit_error
+from devx.secrets import redact_secrets
 from devx.token_optim.compaction import append_message as compact_append_message
 from devx.token_optim.context import (
     decoupled_coder_context,
@@ -259,7 +260,7 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
                 try:
                     rel_p = str(path_item).strip().replace("\\", "/").lstrip("/")
                     data = backend.read_bytes(rel_p, settings.max_file_bytes)
-                    text = data.decode("utf-8", errors="replace")
+                    text = redact_secrets(data.decode("utf-8", errors="replace"))
                     context_blocks.append(f"--- {rel_p} ---\n{text}")
                 except Exception:
                     pass

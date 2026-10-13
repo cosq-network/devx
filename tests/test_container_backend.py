@@ -26,6 +26,7 @@ class FakeContainerRunner:
         self.scripts: list[str] = []
         self.pgid: str = ""
         self.kill_scripts: list[str] = []
+        self.realpaths: dict[str, str] = {}
 
     def __call__(self, argv, *, input=None, timeout=120):
         script = argv[-1]
@@ -34,6 +35,14 @@ class FakeContainerRunner:
             return self._run_command(script, timeout)
         tokens = shlex.split(script)
         head = tokens[0]
+        if head == "pwd":
+            return _Result(0, (self.root + "\n").encode())
+        if head == "realpath" or head == "readlink":
+            path = tokens[2]
+            resolved = self.realpaths.get(path)
+            if resolved is None:
+                return _Result(1, b"", b"not supported")
+            return _Result(0, (resolved + "\n").encode())
         if head == "head":
             path = tokens[3]
             if path not in self.files:
@@ -202,6 +211,27 @@ def test_container_path_sandbox_rejects_escape(backend):
         store.read_bytes("../outside.txt", 10)
     with pytest.raises(PermissionError):
         store.write_bytes("/etc/passwd", b"x")
+
+
+def test_container_rejects_symlink_escape(backend):
+    """A link inside the workspace that resolves outside it must be refused."""
+    store, runner = backend
+    runner.files["/app/escape"] = b"payload"
+    runner.realpaths["/app/escape"] = "/etc/passwd"
+    with pytest.raises(PermissionError):
+        store.read_bytes("escape", 10)
+
+
+def test_container_relative_root_anchored_via_pwd():
+    """A bare ``container://name`` root is anchored to the real workdir so
+    absolute paths cannot slip past an indeterminate ``.`` root."""
+    runner = FakeContainerRunner(root="/app")
+    cfg = ContainerConfig(container="devx-test", remote_path=".")
+    store = ContainerWorkspaceBackend(cfg, runner=runner)
+    runner.files["/app/note.txt"] = b"hello"
+    assert store.read_bytes("note.txt", 100) == b"hello"
+    with pytest.raises(PermissionError):
+        store.read_bytes("/etc/passwd", 10)
 
 
 # ── command execution ──────────────────────────────────────────────────────

@@ -109,6 +109,44 @@ def test_ssh_workspace_root_slash_allows_absolute_paths():
     assert backend.read_bytes("/etc/hosts", 100) == b"remote bytes"
 
 
+def _sftp_returning(payload: bytes, canonical: str | None):
+    mock_client = MagicMock()
+    mock_sftp = MagicMock()
+    mock_file = MagicMock()
+    mock_file.read.return_value = payload
+    mock_sftp.open.return_value.__enter__.return_value = mock_file
+    if canonical is not None:
+        mock_sftp.normalize.return_value = canonical
+    return mock_client, mock_sftp
+
+
+def test_ssh_backend_rejects_symlink_escape():
+    """A link inside the workspace resolving outside it must be refused."""
+    mock_client, mock_sftp = _sftp_returning(b"secret", "/etc/passwd")
+    cfg = SshConfig(host="mock-host", username="user", remote_path="/app")
+    backend = SshWorkspaceBackend(cfg, client=mock_client, sftp=mock_sftp)
+    with pytest.raises(PermissionError):
+        backend.read_bytes("link.py", 100)
+
+
+def test_ssh_backend_allows_symlink_within_workspace():
+    mock_client, mock_sftp = _sftp_returning(b"ok", "/app/real.py")
+    cfg = SshConfig(host="mock-host", username="user", remote_path="/app")
+    backend = SshWorkspaceBackend(cfg, client=mock_client, sftp=mock_sftp)
+    assert backend.read_bytes("link.py", 100) == b"ok"
+
+
+def test_ssh_backend_relative_root_anchored_to_home():
+    """A URI without a path is anchored to the server-reported workdir so
+    absolute paths cannot slip past an indeterminate ``.`` root."""
+    mock_client, mock_sftp = _sftp_returning(b"ok", "/home/user")
+    cfg = SshConfig(host="mock-host", username="user", remote_path=".")
+    backend = SshWorkspaceBackend(cfg, client=mock_client, sftp=mock_sftp)
+    assert backend.read_bytes("note.txt", 100) == b"ok"
+    with pytest.raises(PermissionError):
+        backend.read_bytes("/etc/passwd", 100)
+
+
 def test_ssh_config_uri_port_wins_over_ssh_config(monkeypatch):
     monkeypatch.setattr(
         SshConfig,

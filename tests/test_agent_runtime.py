@@ -85,6 +85,15 @@ class TestRunToolsParallel:
         assert result["result"] is None
         assert result["error"] == "WRITE DENIED"
 
+    def test_write_file_denied_when_approval_required_but_no_callback(self):
+        # Fail closed: a Write that requires approval must not proceed when no
+        # approval callback was supplied (e.g. a headless run without a TTY).
+        tools = FakeWorkspaceTools()
+        tools.approval_map[("edit", "a.py")] = True
+        result = make_result("write_file", {"path": "a.py", "content": "x"}, tools)
+        assert result["result"] is None
+        assert result["error"] == "WRITE DENIED"
+
     def test_write_file_approved_goes_through(self):
         tools = FakeWorkspaceTools()
         tools.approval_map[("edit", "a.py")] = True
@@ -103,6 +112,13 @@ class TestRunToolsParallel:
         result = make_result(
             "run_command", {"command": "rm -rf build"}, tools, approve=lambda *_: False
         )
+        assert result["error"] == "COMMAND DENIED"
+
+    def test_run_command_denied_when_approval_required_but_no_callback(self):
+        tools = FakeWorkspaceTools()
+        tools.approval_map[("shell", "rm -rf build")] = True
+        result = make_result("run_command", {"command": "rm -rf build"}, tools)
+        assert result["result"] is None
         assert result["error"] == "COMMAND DENIED"
 
     def test_run_command_ok(self):

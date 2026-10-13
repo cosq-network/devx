@@ -436,7 +436,10 @@ async def run_tools_parallel(
                     if not path:
                         return {"tool": tool_name, "arguments": args, "result": None, "error": "missing path"}
                     preview = tools.preview_write(path, content)
-                    if tools.requires_approval("edit", path) and approve and not approve("write", path, "Proposed diff:\n" + preview):
+                    if tools.requires_approval("edit", path) and (
+                        approve is None
+                        or not approve("write", path, "Proposed diff:\n" + preview)
+                    ):
                         return {"tool": tool_name, "arguments": args, "result": None, "error": "WRITE DENIED"}
                     result = await loop.run_in_executor(executor, lambda: tools.write(path, content, approved=True))
                     return {"tool": tool_name, "arguments": args, "result": result.output if result.ok else None, "error": None if result.ok else result.output}
@@ -444,7 +447,10 @@ async def run_tools_parallel(
                     command = args.get("command", "")
                     if not command:
                         return {"tool": tool_name, "arguments": args, "result": None, "error": "missing command"}
-                    if tools.requires_approval("shell", command) and approve and not approve("command", command, "The agent requested this project command."):
+                    if tools.requires_approval("shell", command) and (
+                        approve is None
+                        or not approve("command", command, "The agent requested this project command.")
+                    ):
                         return {"tool": tool_name, "arguments": args, "result": None, "error": "COMMAND DENIED"}
                     result = await loop.run_in_executor(executor, lambda: tools.run(command, approved=True))
                     return {"tool": tool_name, "arguments": args, "result": result.output if result.ok else None, "error": None if result.ok else result.output}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Any, TypedDict
@@ -48,6 +49,9 @@ class KnowledgeGraph:
             db_path = str(Path.home() / ".devx" / "knowledge_graph.db")
         self.db_path = Path(db_path)
         self._conn: sqlite3.Connection | None = None
+        # A single shared connection is not safe to use from concurrent threads
+        # (tools may run in parallel); serialize all access on one re-entrant lock.
+        self._lock = threading.RLock()
         self._init_db()
 
     # ------------------------------------------------------------------
@@ -55,34 +59,37 @@ class KnowledgeGraph:
     # ------------------------------------------------------------------
 
     def _init_db(self) -> None:
-        self._conn = sqlite3.connect(self.db_path)
-        cur = self._conn.cursor()
-        # —— nodes table ——
-        cur.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {NODE_TABLE} (
-                id TEXT PRIMARY KEY,
-                title TEXT,
-                description TEXT,
-                created_at REAL,
-                metadata TEXT
+        with self._lock:
+            if self._conn is not None:
+                return
+            self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            cur = self._conn.cursor()
+            # —— nodes table ——
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {NODE_TABLE} (
+                    id TEXT PRIMARY KEY,
+                    title TEXT,
+                    description TEXT,
+                    created_at REAL,
+                    metadata TEXT
+                )
+                """
             )
-            """
-        )
-        # —— edges table ——
-        cur.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {EDGE_TABLE} (
-                source_id TEXT,
-                target_id TEXT,
-                relation TEXT,
-                strength REAL,
-                date_added REAL,
-                PRIMARY KEY (source_id, target_id)
+            # —— edges table ——
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {EDGE_TABLE} (
+                    source_id TEXT,
+                    target_id TEXT,
+                    relation TEXT,
+                    strength REAL,
+                    date_added REAL,
+                    PRIMARY KEY (source_id, target_id)
+                )
+                """
             )
-            """
-        )
-        self._conn.commit()
+            self._conn.commit()
 
     # ------------------------------------------------------------------
     # Node methods
@@ -96,40 +103,42 @@ class KnowledgeGraph:
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """Set a node's attributes."""
-        if self._conn is None:
-            self._init_db()
-        cur = self._conn.cursor()
-        cur.execute(
-            f"""
-            INSERT OR REPLACE INTO {NODE_TABLE} (id, title, description, created_at, metadata)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                node_id,
-                title,
-                description,
-                time.time(),
-                json.dumps(metadata) if metadata else None,
-            ),
-        )
-        self._conn.commit()
+        with self._lock:
+            if self._conn is None:
+                self._init_db()
+            cur = self._conn.cursor()
+            cur.execute(
+                f"""
+                INSERT OR REPLACE INTO {NODE_TABLE} (id, title, description, created_at, metadata)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    node_id,
+                    title,
+                    description,
+                    time.time(),
+                    json.dumps(metadata) if metadata else None,
+                ),
+            )
+            self._conn.commit()
 
     def get_node(self, node_id: str) -> dict[str, Any] | None:
         """Get a node's attributes."""
-        if self._conn is None:
-            self._init_db()
-        cur = self._conn.cursor()
-        cur.execute(f"SELECT * FROM {NODE_TABLE} WHERE id = ?", (node_id,))
-        row = cur.fetchone()
-        if row is None:
-            return None
-        return {
-            "id": row[0],
-            "title": row[1],
-            "description": row[2],
-            "created_at": row[3],
-            "metadata": json.loads(row[4]) if row[4] else None,
-        }
+        with self._lock:
+            if self._conn is None:
+                self._init_db()
+            cur = self._conn.cursor()
+            cur.execute(f"SELECT * FROM {NODE_TABLE} WHERE id = ?", (node_id,))
+            row = cur.fetchone()
+            if row is None:
+                return None
+            return {
+                "id": row[0],
+                "title": row[1],
+                "description": row[2],
+                "created_at": row[3],
+                "metadata": json.loads(row[4]) if row[4] else None,
+            }
 
     # ------------------------------------------------------------------
     # Edge methods
@@ -143,36 +152,38 @@ class KnowledgeGraph:
         strength: float = 0.0,
     ) -> None:
         """Set an edge (relation) between two nodes."""
-        if self._conn is None:
-            self._init_db()
-        cur = self._conn.cursor()
-        cur.execute(
-            f"""
-            INSERT OR REPLACE INTO {EDGE_TABLE} (source_id, target_id, relation, strength, date_added)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (source_id, target_id, relation, strength, time.time()),
-        )
-        self._conn.commit()
+        with self._lock:
+            if self._conn is None:
+                self._init_db()
+            cur = self._conn.cursor()
+            cur.execute(
+                f"""
+                INSERT OR REPLACE INTO {EDGE_TABLE} (source_id, target_id, relation, strength, date_added)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (source_id, target_id, relation, strength, time.time()),
+            )
+            self._conn.commit()
 
     def get_edges(self, node_id: str) -> list[dict[str, Any]]:
         """Get all edges originating from a node."""
-        if self._conn is None:
-            self._init_db()
-        cur = self._conn.cursor()
-        cur.execute(
-            f"SELECT * FROM {EDGE_TABLE} WHERE source_id = ?", (node_id,)
-        )
-        rows = cur.fetchall()
-        return [
-            {
-                "target_id": row[1],
-                "relation": row[2] or "",
-                "strength": row[3] if row[3] is not None else 0.0,
-                "date_added": row[4],
-            }
-            for row in rows
-        ]
+        with self._lock:
+            if self._conn is None:
+                self._init_db()
+            cur = self._conn.cursor()
+            cur.execute(
+                f"SELECT * FROM {EDGE_TABLE} WHERE source_id = ?", (node_id,)
+            )
+            rows = cur.fetchall()
+            return [
+                {
+                    "target_id": row[1],
+                    "relation": row[2] or "",
+                    "strength": row[3] if row[3] is not None else 0.0,
+                    "date_added": row[4],
+                }
+                for row in rows
+            ]
 
     # ------------------------------------------------------------------
     # Convenience property for external access

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+from devx.secrets import redact_secrets
 
 
 CODE_EXTS = {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".kt", ".swift", ".cpp", ".cc", ".c", ".h", ".hpp", ".cs", ".php", ".rb", ".scala", ".clj", ".hs", ".ml", ".fs", ".vue", ".svelte", ".astro", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".md", ".txt", ".sql", ".sh", ".bash", ".zsh", ".fish", ".ps1", ".dockerfile", ".dockerignore", ".gitignore", ".env"}
@@ -8,24 +11,25 @@ CODE_EXTS = {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".kt", 
 IGNORE_DIRS = {".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv", "venv", "env", "node_modules", "dist", "build", "target", "out", "bin", "obj", ".next", ".nuxt", ".svelte-kit", "coverage", ".coverage", "htmlcov", ".tox", ".nox", "site-packages", "vendor", "bower_components", "jspm_packages", "*.egg-info", ".eggs"}
 
 
-def _is_ignored(path: Path, workspace: Path) -> bool:
-    try:
-        rel = path.relative_to(workspace)
-    except ValueError:
-        return True
-    for part in rel.parts:
-        if part in IGNORE_DIRS or part.startswith("."):
-            return True
-    return False
-
-
 def discover_project_files(workspace: Path, max_files: int = 200) -> list[Path]:
-    """Discover code files in the workspace, respecting common ignore patterns."""
+    """Discover code files in the workspace, respecting common ignore patterns.
+
+    The walk never follows symlinks and skips symlinked files, so a link inside
+    the workspace cannot pull files from outside it into the agent's context.
+    """
     files: list[Path] = []
-    for candidate in workspace.rglob("*"):
-        if _is_ignored(candidate, workspace):
-            continue
-        if candidate.is_file() and candidate.suffix.lower() in CODE_EXTS:
+    for dirpath, dirnames, filenames in os.walk(workspace, followlinks=False):
+        dirnames[:] = [
+            name for name in dirnames if name not in IGNORE_DIRS and not name.startswith(".")
+        ]
+        for name in filenames:
+            if name.startswith("."):
+                continue
+            candidate = Path(dirpath) / name
+            if candidate.suffix.lower() not in CODE_EXTS:
+                continue
+            if candidate.is_symlink():
+                continue
             try:
                 if candidate.stat().st_size > 1_000_000:
                     continue
@@ -34,6 +38,8 @@ def discover_project_files(workspace: Path, max_files: int = 200) -> list[Path]:
             files.append(candidate)
             if len(files) >= max_files:
                 break
+        if len(files) >= max_files:
+            break
     return sorted(files, key=lambda p: (len(p.parts), p.name.lower()))
 
 
@@ -102,7 +108,7 @@ def generate_file_manifest(files: list[Path], max_chars: int = 8000) -> str:
                         or stripped.startswith("function ")
                         or stripped.startswith("async def ")
                     ):
-                        previews.append(f"    {stripped}")
+                        previews.append(f"    {redact_secrets(stripped)}")
                         if len(previews) >= 8:
                             previews.append("    ...")
                             break
@@ -133,7 +139,13 @@ def decoupled_coder_context(files: list[Path]) -> str:
     )
 
 
-def read_context(files: list[Path], max_file_bytes: int = 1_000_000, max_total_bytes: int = 5_000_000) -> str:
+def read_context(
+    files: list[Path],
+    max_file_bytes: int = 1_000_000,
+    max_total_bytes: int = 5_000_000,
+    *,
+    redact: bool = True,
+) -> str:
     chunks: list[str] = []
     total = 0
     for path in files:
@@ -144,6 +156,9 @@ def read_context(files: list[Path], max_file_bytes: int = 1_000_000, max_total_b
                 content = stream.read(max_file_bytes).decode("utf-8", errors="replace")
         except OSError:
             continue
+        if redact:
+            # Don't ship anything that looks like a live credential to the model.
+            content = redact_secrets(content)
         remaining = max_total_bytes - total
         header = f"\n--- {path} ---\n"
         header_bytes = header.encode("utf-8")

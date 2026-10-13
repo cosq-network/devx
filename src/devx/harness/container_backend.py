@@ -53,6 +53,8 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
     def __init__(self, config: ContainerConfig, runner: Runner | None = None):
         self.config = config
         self._runner = runner or self._subprocess_run
+        self._cwd: str | None = None
+        self._real_cache: dict[str, str] = {}
 
     @property
     def root(self) -> str:
@@ -64,15 +66,66 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
 
     # ── process plumbing ────────────────────────────────────────────────
 
-    @staticmethod
-    def _subprocess_run(args: list[str], *, input: bytes | None = None, timeout: float = 120) -> Any:
+    # Bytes retained from a single captured stream. The reader keeps draining
+    # the pipe (so the child never blocks) but only the first
+    # ``_MAX_CAPTURE_BYTES`` are kept, bounding devx's memory when a container
+    # command emits unbounded output.
+    _MAX_CAPTURE_BYTES = 64 * 1024 * 1024
+
+    @classmethod
+    def _drain_bounded(cls, stream: Any, limit: int) -> bytes:
+        buf = bytearray()
+        while True:
+            try:
+                chunk = stream.read(65536)
+            except Exception:
+                break
+            if not chunk:
+                break
+            if len(buf) < limit:
+                buf.extend(chunk[: limit - len(buf)])
+        return bytes(buf)
+
+    @classmethod
+    def _subprocess_run(cls, args: list[str], *, input: bytes | None = None, timeout: float = 120) -> Any:
         # nosec B603 B607 - args are constructed here, never from raw user shell text.
-        kwargs: dict[str, Any] = {"capture_output": True, "timeout": timeout, "check": False}
-        if input is not None:
-            kwargs["input"] = input
-        else:
-            kwargs["stdin"] = subprocess.DEVNULL
-        return subprocess.run(args, **kwargs)  # nosec B603 B607
+        proc = subprocess.Popen(  # nosec B603 B607
+            args,
+            stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        captured: dict[str, bytes] = {"stdout": b"", "stderr": b""}
+
+        def _capture(stream: Any, key: str) -> None:
+            captured[key] = cls._drain_bounded(stream, cls._MAX_CAPTURE_BYTES)
+
+        threads = [
+            threading.Thread(target=_capture, args=(proc.stdout, "stdout"), daemon=True),
+            threading.Thread(target=_capture, args=(proc.stderr, "stderr"), daemon=True),
+        ]
+        for thread in threads:
+            thread.start()
+        if input is not None and proc.stdin is not None:
+            try:
+                proc.stdin.write(input)
+                proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+        timed_out = False
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            proc.kill()
+            proc.wait()
+        for thread in threads:
+            thread.join(timeout=5)
+        if timed_out:
+            raise subprocess.TimeoutExpired(proc.args, timeout)
+        return subprocess.CompletedProcess(
+            proc.args, proc.returncode, captured["stdout"], captured["stderr"]
+        )
 
     def _exec(self, script: str, *, input: bytes | None = None, timeout: float = 120) -> Any:
         argv = [self.config.docker, "exec", "-i", self.config.container, "sh", "-c", script]
@@ -96,19 +149,75 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
     def _stderr(cls, result: Any) -> str:
         return cls._as_bytes(getattr(result, "stderr", b"")).decode("utf-8", errors="replace").strip()
 
+    @staticmethod
+    def _inside(root: str, path: str) -> bool:
+        if root == "/":
+            return path.startswith("/")
+        return path == root or path.startswith(root + "/")
+
+    def _anchor(self) -> str:
+        """Absolute workspace root inside the container.
+
+        A bare ``container://name`` URI has no path; resolve its working
+        directory once (via ``pwd``) so an indeterminate root cannot be used as
+        a launchpad for absolute reads/writes.
+        """
+        raw = self.config.remote_path
+        if raw not in (".", ""):
+            return posixpath.normpath(raw)
+        if self._cwd is None:
+            result = self._exec("pwd")
+            cwd = self._decode(result).decode("utf-8", errors="replace").strip()
+            if getattr(result, "returncode", 1) != 0 or not cwd.startswith("/"):
+                raise PermissionError(
+                    "Container workspace path is not set and the container working directory could not be determined"
+                )
+            self._cwd = posixpath.normpath(cwd)
+        return self._cwd
+
+    def _realpath(self, norm: str) -> str | None:
+        """Canonicalize a container path, following symlinks where supported.
+
+        Uses ``realpath -m`` (GNU coreutils) and falls back to ``readlink -f``
+        (BusyBox); returns ``None`` when neither is available so callers keep the
+        lexical path (still anchored by the containment check).
+        """
+        for tool in ("realpath -m", "readlink -f"):
+            try:
+                result = self._exec(f"{tool} {shlex.quote(norm)}")
+            except Exception:
+                continue
+            if getattr(result, "returncode", 1) != 0:
+                continue
+            text = self._decode(result).decode("utf-8", errors="replace").strip()
+            if text.startswith("/"):
+                return posixpath.normpath(text)
+        return None
+
+    def _canonical(self, norm: str) -> str:
+        cached = self._real_cache.get(norm)
+        if cached is not None:
+            return cached
+        canon = self._realpath(norm) or norm
+        if len(self._real_cache) >= 4096:
+            self._real_cache.clear()
+        self._real_cache[norm] = canon
+        return canon
+
     def _resolve(self, rel_path: str) -> str:
         clean = rel_path.strip().replace("\\", "/")
-        root_norm = posixpath.normpath(self.config.remote_path)
+        root = self._anchor()
         if clean.startswith("/"):
             norm = posixpath.normpath(clean)
         else:
-            norm = posixpath.normpath(posixpath.join(self.config.remote_path, clean))
-        if root_norm == ".":
-            if norm == ".." or norm.startswith("../"):
-                raise PermissionError(f"Path is outside container workspace: {rel_path}")
-        elif norm != root_norm and not norm.startswith(root_norm + "/"):
+            norm = posixpath.normpath(posixpath.join(root, clean))
+        if not self._inside(root, norm):
             raise PermissionError(f"Path is outside container workspace: {rel_path}")
-        return norm
+        # Follow symlinks so a link inside the workspace cannot point outside it.
+        canon = self._canonical(norm)
+        if not self._inside(root, canon):
+            raise PermissionError(f"Path resolves outside container workspace: {rel_path}")
+        return canon
 
     # ── filesystem ──────────────────────────────────────────────────────
 
@@ -169,7 +278,7 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
         return [line for line in self._decode(result).decode("utf-8", errors="replace").splitlines() if line]
 
     def walk_files(self, max_files: int = 200, code_exts: set[str] | None = None) -> list[str]:
-        root = posixpath.normpath(self.config.remote_path)
+        root = self._anchor()
         result = self._exec(f"find {shlex.quote(root)} -type f")
         if getattr(result, "returncode", 1) != 0:
             return []
@@ -221,7 +330,7 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
         # ``docker exec`` to signal the recorded pid.
         marker = f"/tmp/devx-cgid-{uuid.uuid4().hex}"
         script = (
-            f"cd {shlex.quote(self.config.remote_path)} && "
+            f"cd {shlex.quote(self._anchor())} && "
             f"if [ -f .venv/bin/activate ]; then . .venv/bin/activate; fi && "
             f"echo $$ > {shlex.quote(marker)} && "
             f"{cmd_str}"
