@@ -351,8 +351,25 @@ class SshWorkspaceBackend(WorkspaceBackend):
             raise PermissionError(f"Path is outside remote workspace: {rel_path}")
         # Follow symlinks so a link inside the workspace cannot point outside it.
         canon = self._sftp_normalize(norm)
-        if canon is not None and not self._inside(root, canon):
-            raise PermissionError(f"Path resolves outside remote workspace: {rel_path}")
+        if canon is not None:
+            if not self._inside(root, canon):
+                raise PermissionError(f"Path resolves outside remote workspace: {rel_path}")
+        else:
+            # When the target file does not exist yet (e.g. write_bytes),
+            # normalize its closest existing ancestor to catch symlinked parent
+            # directories pointing outside the workspace.
+            parent = posixpath.dirname(norm)
+            while parent and parent != "/" and len(parent) >= len(root):
+                parent_canon = self._sftp_normalize(parent)
+                if parent_canon is not None:
+                    if not self._inside(root, parent_canon):
+                        raise PermissionError(f"Path resolves outside remote workspace: {rel_path}")
+                    rel_under_parent = posixpath.relpath(norm, parent)
+                    canon = posixpath.normpath(posixpath.join(parent_canon, rel_under_parent))
+                    if not self._inside(root, canon):
+                        raise PermissionError(f"Path resolves outside remote workspace: {rel_path}")
+                    break
+                parent = posixpath.dirname(parent)
         return canon or norm
 
     def read_bytes(self, rel_path: str, max_bytes: int | None = None) -> bytes:

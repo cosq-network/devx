@@ -128,3 +128,19 @@ def test_list_models_converts_provider_errors_to_configuration_error(monkeypatch
 
     with pytest.raises(ConfigurationError, match="Unable to discover models"):
         list_models("https://example.test/v1")
+
+
+def test_apply_init_resets_base_url_when_empty(tmp_path: Path):
+    from devx.configuration import apply_init
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("DEVX_BASE_URL=https://old.endpoint/v1\n", encoding="utf-8")
+
+    result = apply_init(tmp_path, provider="google", model="gemini-2.0-flash", base_url="")
+    assert result["base_url"] == ""
+
+    saved = env_path.read_text(encoding="utf-8")
+    assert "DEVX_PROVIDER=google" in saved
+    assert "DEVX_MODEL=gemini-2.0-flash" in saved
+    assert "DEVX_BASE_URL" not in saved
+

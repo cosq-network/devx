@@ -226,3 +226,10 @@ def test_aggregate_usage_by_run_only(tmp_path: Path):
     report = store.aggregate_usage(run_id="run-b")
     assert report["calls"] == 1
     assert report["total_tokens"] == 90
+
+
+def test_cli_report_rejects_both_remote_and_container(tmp_path: Path, monkeypatch):
+    _cli_settings(monkeypatch, tmp_path)
+    result = runner.invoke(app, ["report", "s1", "--remote", "ssh://user@host", "--container", "container://c1"])
+    assert result.exit_code != 0
+    assert "Cannot specify both --remote and --container" in result.output

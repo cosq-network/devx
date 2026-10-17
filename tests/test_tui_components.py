@@ -1223,6 +1223,101 @@ class TestProviderSetupModal:
         assert app.quit_calls == 1
         assert app.exit_calls == 0
 
+    def test_save_google_allows_empty_base_url(self, tmp_path, monkeypatch):
+        """Google provider has no canonical base URL; empty base_url must be permitted."""
+        from devx.tui.components.modals import ProviderSetupModal
+
+        captured: dict = {}
+
+        def fake_apply_init(workspace, *, provider, model, api_key="", base_url="", embeddings=False, project=None):
+            captured.update(
+                workspace=workspace,
+                provider=provider,
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
+            )
+            return {}
+
+        monkeypatch.setattr("devx.configuration.apply_init", fake_apply_init)
+
+        class _Value:
+            def __init__(self, value):
+                self.value = value
+
+        class _Label:
+            def __init__(self):
+                self.text = ""
+
+            def update(self, text):
+                self.text = text
+
+        class _Button:
+            def __init__(self, id):
+                self.id = id
+
+        settings = Settings(workspace=tmp_path, provider="google", model="gemini-2.0-flash")
+        modal = ProviderSetupModal(settings, lambda: None, first_time=False)
+        error_label = _Label()
+        widgets = {
+            "#setup-provider": _Value("google"),
+            "#setup-api-key": _Value("AIzaSy-test-key"),
+            "#setup-base-url": _Value(""),
+            "#setup-model": _Value("gemini-2.0-flash"),
+            "#setup-error": error_label,
+        }
+        modal.query_one = lambda selector, *a, **k: widgets[selector]  # type: ignore[method-assign]
+        calls = {"done": 0, "dismiss": 0}
+        modal.done = lambda: calls.__setitem__("done", calls["done"] + 1)  # type: ignore[method-assign]
+        modal.dismiss = lambda: calls.__setitem__("dismiss", calls["dismiss"] + 1)  # type: ignore[method-assign]
+
+        modal.on_button_pressed(SimpleNamespace(button=_Button("setup-save")))
+
+        assert error_label.text == ""
+        assert captured["provider"] == "google"
+        assert captured["base_url"] == ""
+        assert calls == {"done": 1, "dismiss": 1}
+
+    def test_save_validates_required_fields(self, tmp_path):
+        from devx.tui.components.modals import ProviderSetupModal
+
+        class _Value:
+            def __init__(self, value):
+                self.value = value
+
+        class _Label:
+            def __init__(self):
+                self.text = ""
+
+            def update(self, text):
+                self.text = text
+
+        class _Button:
+            def __init__(self, id):
+                self.id = id
+
+        settings = Settings(workspace=tmp_path, provider="openai", model="gpt-4o")
+        modal = ProviderSetupModal(settings, lambda: None, first_time=False)
+
+        # Missing model
+        error_label = _Label()
+        widgets = {
+            "#setup-provider": _Value("openai"),
+            "#setup-api-key": _Value("sk-test"),
+            "#setup-base-url": _Value("https://api.openai.com/v1"),
+            "#setup-model": _Value(""),
+            "#setup-error": error_label,
+        }
+        modal.query_one = lambda selector, *a, **k: widgets[selector]  # type: ignore[method-assign]
+        modal.on_button_pressed(SimpleNamespace(button=_Button("setup-save")))
+        assert error_label.text == "Model is required."
+
+        # Missing base_url for provider that needs one
+        widgets["#setup-model"] = _Value("gpt-4o")
+        widgets["#setup-base-url"] = _Value("")
+        modal.on_button_pressed(SimpleNamespace(button=_Button("setup-save")))
+        assert error_label.text == "Base URL is required."
+
 
 # ── AgentRunner (TUI) ────────────────────────────────────────────────────
 

@@ -136,6 +136,25 @@ def test_ssh_backend_allows_symlink_within_workspace():
     assert backend.read_bytes("link.py", 100) == b"ok"
 
 
+def test_ssh_backend_rejects_nonexistent_target_in_escaping_symlink_dir():
+    """A write to a new file inside a symlinked directory resolving outside the workspace must be refused."""
+    mock_client = MagicMock()
+    mock_sftp = MagicMock()
+
+    def fake_normalize(path):
+        if path == "/app/escape_dir/new_file.py":
+            raise OSError("No such file")
+        if path == "/app/escape_dir":
+            return "/etc"
+        return path
+
+    mock_sftp.normalize.side_effect = fake_normalize
+    cfg = SshConfig(host="mock-host", username="user", remote_path="/app")
+    backend = SshWorkspaceBackend(cfg, client=mock_client, sftp=mock_sftp)
+    with pytest.raises(PermissionError):
+        backend.write_bytes("escape_dir/new_file.py", b"payload")
+
+
 def test_ssh_backend_relative_root_anchored_to_home():
     """A URI without a path is anchored to the server-reported workdir so
     absolute paths cannot slip past an indeterminate ``.`` root."""

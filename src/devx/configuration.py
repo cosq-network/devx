@@ -235,14 +235,16 @@ def apply_init(
 
     env_path = workspace / ".env"
     user_config = UserConfig(env_path)
-    user_config.update(
-        {
-            "DEVX_PROVIDER": name,
-            "DEVX_MODEL": model.strip(),
-            "DEVX_BASE_URL": resolved_base_url,
-            "DEVX_EMBEDDINGS_ENABLED": str(embeddings_enabled).lower(),
-        }
-    )
+    updates = {
+        "DEVX_PROVIDER": name,
+        "DEVX_MODEL": model.strip(),
+        "DEVX_EMBEDDINGS_ENABLED": str(embeddings_enabled).lower(),
+    }
+    if resolved_base_url:
+        updates["DEVX_BASE_URL"] = resolved_base_url
+    else:
+        user_config.reset(("DEVX_BASE_URL", "DEV_BASE_URL"))
+    user_config.update(updates)
     if api_key.strip():
         user_config.set_api_key(api_key.strip())
 

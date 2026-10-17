@@ -6,7 +6,9 @@ from pathlib import Path
 from devx.secrets import redact_secrets
 
 
-CODE_EXTS = {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".kt", ".swift", ".cpp", ".cc", ".c", ".h", ".hpp", ".cs", ".php", ".rb", ".scala", ".clj", ".hs", ".ml", ".fs", ".vue", ".svelte", ".astro", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".md", ".txt", ".sql", ".sh", ".bash", ".zsh", ".fish", ".ps1", ".dockerfile", ".dockerignore", ".gitignore", ".env"}
+CODE_EXTS = {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".kt", ".swift", ".cpp", ".cc", ".c", ".h", ".hpp", ".cs", ".php", ".rb", ".scala", ".clj", ".hs", ".ml", ".fs", ".vue", ".svelte", ".astro", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".md", ".txt", ".sql", ".sh", ".bash", ".zsh", ".fish", ".ps1", ".dockerfile"}
+
+ALLOWED_DOTFILES = {".gitignore", ".dockerignore"}
 
 IGNORE_DIRS = {".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv", "venv", "env", "node_modules", "dist", "build", "target", "out", "bin", "obj", ".next", ".nuxt", ".svelte-kit", "coverage", ".coverage", "htmlcov", ".tox", ".nox", "site-packages", "vendor", "bower_components", "jspm_packages", "*.egg-info", ".eggs"}
 
@@ -16,6 +18,8 @@ def discover_project_files(workspace: Path, max_files: int = 200) -> list[Path]:
 
     The walk never follows symlinks and skips symlinked files, so a link inside
     the workspace cannot pull files from outside it into the agent's context.
+    Safe configuration dotfiles (.gitignore, .dockerignore) are included, while
+    credential files (.env) are strictly excluded.
     """
     files: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(workspace, followlinks=False):
@@ -23,10 +27,12 @@ def discover_project_files(workspace: Path, max_files: int = 200) -> list[Path]:
             name for name in dirnames if name not in IGNORE_DIRS and not name.startswith(".")
         ]
         for name in filenames:
+            lower = name.lower()
             if name.startswith("."):
-                continue
+                if lower not in ALLOWED_DOTFILES:
+                    continue
             candidate = Path(dirpath) / name
-            if candidate.suffix.lower() not in CODE_EXTS:
+            if lower not in ALLOWED_DOTFILES and candidate.suffix.lower() not in CODE_EXTS:
                 continue
             if candidate.is_symlink():
                 continue

@@ -198,7 +198,18 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
         cached = self._real_cache.get(norm)
         if cached is not None:
             return cached
-        canon = self._realpath(norm) or norm
+        canon = self._realpath(norm)
+        if canon is None:
+            root = self._anchor()
+            parent = posixpath.dirname(norm)
+            while parent and parent != "/" and len(parent) >= len(root):
+                parent_canon = self._realpath(parent)
+                if parent_canon is not None:
+                    rel_under_parent = posixpath.relpath(norm, parent)
+                    canon = posixpath.normpath(posixpath.join(parent_canon, rel_under_parent))
+                    break
+                parent = posixpath.dirname(parent)
+        canon = canon or norm
         if len(self._real_cache) >= 4096:
             self._real_cache.clear()
         self._real_cache[norm] = canon

@@ -222,6 +222,14 @@ def test_container_rejects_symlink_escape(backend):
         store.read_bytes("escape", 10)
 
 
+def test_container_rejects_nonexistent_target_in_escaping_symlink_dir(backend):
+    """A target that does not resolve directly but whose ancestor escapes must be refused."""
+    store, runner = backend
+    runner.realpaths["/app/escape_dir"] = "/etc"
+    with pytest.raises(PermissionError):
+        store.write_bytes("escape_dir/new_file.py", b"x")
+
+
 def test_container_relative_root_anchored_via_pwd():
     """A bare ``container://name`` root is anchored to the real workdir so
     absolute paths cannot slip past an indeterminate ``.`` root."""

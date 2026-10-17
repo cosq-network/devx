@@ -196,7 +196,7 @@ class ProviderSetupModal(ModalScreen):
             return
         if event.button.id != "setup-save":
             return
-        from devx.configuration import ConfigurationError, apply_init
+        from devx.configuration import ConfigurationError, PROVIDERS, apply_init
 
         provider = str(self.query_one("#setup-provider", Select).value)
         api_key = self.query_one("#setup-api-key", Input).value.strip()
@@ -209,8 +209,12 @@ class ProviderSetupModal(ModalScreen):
         if provider != "ollama" and not api_key:
             self.query_one("#setup-error", Label).update("Enter an API key, or choose Ollama for a local model.")
             return
-        if not base_url or not model:
-            self.query_one("#setup-error", Label).update("Base URL and model are required.")
+        if not model:
+            self.query_one("#setup-error", Label).update("Model is required.")
+            return
+        needs_base_url = bool(PROVIDERS.get(provider, {}).get("base_url")) or provider == "ollama"
+        if needs_base_url and not base_url:
+            self.query_one("#setup-error", Label).update("Base URL is required.")
             return
         try:
             # Share the exact write path used by ``devx init`` so both produce

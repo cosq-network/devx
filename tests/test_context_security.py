@@ -58,3 +58,21 @@ def test_read_context_bounded(tmp_path: Path):
     path.write_text("x" * 1000, encoding="utf-8")
     context = read_context([path], max_total_bytes=64)
     assert len(context.encode("utf-8")) <= 64
+
+
+def test_discover_project_files_includes_allowed_dotfiles_and_skips_env(tmp_path: Path):
+    (tmp_path / "main.py").write_text("print('hello')\n", encoding="utf-8")
+    (tmp_path / ".gitignore").write_text("*.pyc\n", encoding="utf-8")
+    (tmp_path / ".dockerignore").write_text(".git\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("SECRET=12345\n", encoding="utf-8")
+    (tmp_path / ".hidden_file.py").write_text("secret = 1\n", encoding="utf-8")
+
+    discovered = discover_project_files(tmp_path)
+    names = {p.name for p in discovered}
+
+    assert "main.py" in names
+    assert ".gitignore" in names
+    assert ".dockerignore" in names
+    assert ".env" not in names
+    assert ".hidden_file.py" not in names
+

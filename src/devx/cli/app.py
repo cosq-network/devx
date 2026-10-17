@@ -108,6 +108,8 @@ if typer is not None:
 
     def _workspace_backend(remote: str | None, container: str | None):
         """Build an optional remote/container backend from CLI flags."""
+        if remote and container:
+            raise typer.BadParameter("Cannot specify both --remote and --container")  # type: ignore[attr-defined]
         if remote:
             from devx.harness.ssh_backend import SshConfig, SshWorkspaceBackend
 
