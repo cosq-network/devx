@@ -2,811 +2,155 @@
 
 Welcome to **`devx`**, your local-first, approval-gated AI coding partner.
 
-This guide is designed for developers who work in the terminal, VS Code, and Git every day. It focuses on the **vibe coding workflow** — expressing your high-level intent, letting the agent plan and inspect the details, reviewing atomic diffs, and keeping 100% control over every change.
-
-For reference documentation on architecture, internals, and provider schemas, refer to the [README](../README.md) and [Architecture Guide](architecture.md).
+`devx` pairs you with an autonomous coding agent that respects your code and your authority. It delivers a fast, terminal-native "vibe coding" experience — expressing intent, reviewing implementation plans, inspecting unified diffs, and keeping 100% control over every change.
 
 ---
 
-## Table of Contents
+## Complete Multi-Page Guide Chapters
 
-1. [What is devx?](#1-what-is-devx)
-2. [5-Minute Setup](#2-5-minute-setup)
-3. [Core Mental Model](#3-core-mental-model)
-4. [Your First Vibe Session](#4-your-first-vibe-session)
-5. [CLI Cheat Sheet](#5-cli-cheat-sheet)
-6. [TUI Workflow Guide](#6-tui-workflow-guide)
-7. [Common Workflows](#7-common-workflows)
-8. [Configuration That Just Works](#8-configuration-that-just-works)
-9. [Troubleshooting and Recovery](#9-troubleshooting-and-recovery)
+Explore the comprehensive topic guides in the [`docs/user-guide/`](user-guide/) suite:
 
----
-
-## 1. What is devx?
-
-`devx` pairs you with an autonomous coding agent that respects your code and your authority.
-
-### The "Vibe Coding" Mental Model
-
-Traditional AI coding assistants either force you to copy-paste code snippets from a chat window or aggressively edit files behind your back. `devx` adopts a balanced, approval-gated workflow:
-
-```
-    Describe Intent ──► Agent Plans ──► You Review Plan ──► Agent Previews Diff ──► You Approve ──► Tests Run
+```mermaid
+graph TD
+    PORTAL[devx User Guide Portal]
+    
+    PORTAL --> CH1["01. Getting Started"]
+    PORTAL --> CH2["02. Core Concepts"]
+    PORTAL --> CH3["03. CLI Reference"]
+    PORTAL --> CH4["04. TUI Guide"]
+    PORTAL --> CH5["05. Workspace Backends"]
+    PORTAL --> CH6["06. Governance & Safety"]
+    PORTAL --> CH7["07. Token Optimization"]
+    PORTAL --> CH8["08. Extensibility & MCP"]
+    PORTAL --> CH9["09. Observability & Operations"]
 ```
 
-- **You drive intent**: "Refactor the authentication middleware to use JWT bearer tokens."
-- **Agent plans first**: It reads files, designs a concrete plan, and presents it to you.
-- **You stay in control**: Every file modification and shell command requires explicit confirmation (unless explicitly run with `--approve-all` in sandboxed environments), and every file **read or write** is scanned for secrets (`DEVX_SECRET_SCAN=warn` by default; `block` also refuses secret-bearing writes).
-- **Zero accidental damage**: Atomic writes, before/after checksums, and a portable change journal in SQLite — reversible file-by-file with `devx changes reject`, globally with `/undo`, and auditable for drift with `devx verify`.
-- **Run where the code lives**: The same approvals, journal, and audit trail apply on your local machine, over SSH (`--remote`), or inside a container (`--container`) — your model and keys never leave your side.
-- **No auto-commits**: `devx` never commits to Git automatically. You inspect diffs and commit when satisfied.
-
-### Quick Comparison
-
-| Capability | `devx` | GitHub Copilot / Codex | Claude Code |
-|---|---|---|---|
-| **Primary UX** | Interactive Textual TUI & Typer CLI | IDE extension | Terminal CLI |
-| **Model choice** | Any provider (OpenAI, Anthropic, Google, Azure, Ollama, OpenRouter) | OpenAI / Microsoft models | Anthropic Claude |
-| **Approval model** | Explicit approval gate for all writes & commands | Inline ghost text / prompt chat | Terminal prompts |
-| **Rollback & undo** | Journaled file backups (`/undo` restores exact state) | Standard editor undo | Manual git revert |
-| **Local token optimization** | Client-side ONNX embeddings + local history compaction | Cloud-managed | Cloud-managed |
-| **Extensibility** | Workspace Python plugins + stdio MCP tools | Extensions API | MCP support |
+| Chapter | Overview |
+|---|---|
+| [**1. Getting Started**](user-guide/01-getting-started.md) | Prerequisites, packaging extras, global PATH setup, interactive init wizard, diagnostics, and first task |
+| [**2. Core Concepts**](user-guide/02-core-concepts.md) | Supervisor state machine (Planner, Coder, Parallel Coder, Tester, Repair Loop), approval gates, sessions, and knowledge graph |
+| [**3. CLI Reference**](user-guide/03-cli-reference.md) | Exhaustive documentation of all 17 CLI commands and command-line flags |
+| [**4. TUI Workflow Guide**](user-guide/04-tui-guide.md) | Full layout breakdown, modal dialogues, all slash commands, shortcuts, and layered clipboard mechanisms |
+| [**5. Workspace Backends**](user-guide/05-workspace-backends.md) | Governed execution across Local, SSH (`--remote`), Docker Containers (`--container`), and throwaway Lab (`devx lab`) |
+| [**6. Governance, Safety & Secret Hygiene**](user-guide/06-governance-and-safety.md) | Automated secret scanning/redaction, policy presets (`strict`, `protected`), granular permissions, and change journal rollbacks |
+| [**7. Token Optimization & Caching**](user-guide/07-token-optimization.md) | Local ONNX INT8 embeddings, semantic caching, conversation compaction, decoupled context, and diagnostic distillation |
+| [**8. Extensibility, Plugins & MCP**](user-guide/08-extensibility-and-mcp.md) | Writing Python workspace plugins (`.devx/plugins/`), stdio MCP servers, custom tool registration, and safety boundaries |
+| [**9. Observability, Operations & Team**](user-guide/09-observability-and-ops.md) | Prometheus metrics exposition, LangSmith tracing, DLQ triage & replay, circuit breakers, cost receipts, and team manifests |
 
 ---
 
-## 2. 5-Minute Setup
+## 5-Minute Quickstart
 
 ### Step 1: Install `devx`
 
-`devx` is packaged using standard **PEP 517 / PEP 621** conventions via [`pyproject.toml`](../pyproject.toml). Rather than maintaining a separate `requirements.txt`, all core dependencies, optional feature extras, and command-line entry points are declared directly in `pyproject.toml`.
-
-#### Install in Editable Mode (Recommended for Development)
-
-In your Python 3.11+ environment, install with your desired extras:
+In your Python 3.11+ environment:
 
 ```bash
-# Recommended for full TUI + CLI + Agent + SSH features
-pip install -e ".[agent,tui,cli,ssh,dev]"
+# Clone the repository
+git clone https://github.com/cosq-network/devx.git
+cd devx
 
-# Or install all optional dependencies:
+# Install with all runtime extras (CLI, TUI, Agent, SSH, Embeddings):
 pip install -e ".[all]"
 ```
 
-> **Why editable (`-e`)?**  
-> An editable install links the generated `devx` launcher directly to your working copy. Any updates to code in `src/devx` are instantly active without needing to reinstall.
-
-#### Making `devx` Accessible from Any Directory
-
-Installing `devx` puts the executable in your Python environment's `Scripts` (Windows) or `bin` (macOS/Linux) folder.
-
-- **Windows PowerShell**: Verify the command resolves globally:
-  ```powershell
-  where devx
-  ```
-  If `where devx` fails, append your Python Scripts directory to your User `PATH`:
-  ```powershell
-  $scripts = "$env:LOCALAPPDATA\Programs\Python\Python313\Scripts"
-  $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-  if (($userPath -split ";") -notcontains $scripts) {
-      [Environment]::SetEnvironmentVariable("Path", "$userPath;$scripts", "User")
-  }
-  ```
-- **macOS / Linux**: Ensure `~/.local/bin` or your venv's `bin/` directory is in `$PATH`:
-  ```bash
-  export PATH="$HOME/.local/bin:$PATH"
-  which devx
-  ```
-
-#### Building a Distributable Wheel (Optional)
-
-To package `devx` as a wheel:
-```bash
-python -m pip install build
-python -m build
-pip install "dist/devx_coding_agent-0.2.0.dev0-py3-none-any.whl[all]"
-```
-
-### Step 2: Initialize Your Project
+### Step 2: Initialize Your Workspace
 
 Run the initialization wizard in your project root:
 
 ```bash
+cd /path/to/your/project
 devx init
 ```
 
-The full-screen TUI setup wizard (centered dialog) will:
-1. Help you select your LLM provider (OpenAI, Anthropic, Google Gemini, Azure, Ollama, OpenRouter).
-2. Let you pick a curated model with tool-calling capabilities and confirm the base URL.
-3. Toggle local embeddings.
-4. Save configuration cleanly into `.devx/config.json` (project settings) and `.env` (credentials).
+The full-screen TUI wizard will guide you through picking your LLM provider (OpenRouter, OpenAI, Anthropic, Google, Azure, Ollama), selecting an agent-ready coding model, entering your API key, and toggling local embeddings.
 
-*Tip: For automated setups in CI or Docker scripts, use non-interactive mode (bypasses the wizard):*
-
+*For automated CI / container setups, use non-interactive mode:*
 ```bash
-# With OpenAI:
-devx init --provider openai --model gpt-4o --api-key "$OPENAI_API_KEY" --non-interactive
-
-# Or with OpenRouter's 200k-context free router model:
-devx init --provider openrouter --model openrouter/free --api-key "$OPENROUTER_API_KEY" --non-interactive
+devx init --provider openrouter --model openrouter/free --api-key "$API_KEY" -y
 ```
 
-### Step 3: Run Diagnostic Checks
-
-Verify your setup with `devx doctor` and `devx health`:
+### Step 3: Verify Environment Health
 
 ```bash
 devx doctor
 devx health
 ```
 
-You should see all checks marked healthy (`[ok]`) for configuration, session database, and optional packages.
+Ensure configuration, session database, and extras are marked healthy (`[ok]`).
 
-> Working against a remote server or container instead? Preflight it before you
-> trust it — same command, with a target URI:
->
-> ```bash
-> devx doctor --remote deploy@host:/srv/app
-> ```
-
-### Step 4: Your First Task
-
-Run a quick inspection:
+### Step 4: Run Your First Task
 
 ```bash
-# Ask a question referencing a project file
-devx ask "explain @README.md"
+# In the CLI:
+devx ask "explain how authentication works in @src/auth.py"
 
-# Or launch the interactive terminal UI
+# Or launch the interactive terminal UI:
 devx tui
 ```
 
 ---
 
-## 3. Core Mental Model
+## Quick Reference Cheat Sheet
 
-Understanding `devx` comes down to five concepts:
-
-### 1. The Supervisor State Machine
-
-Under the hood, `devx` executes a LangGraph supervisor graph:
-
-```
-       ┌──────────┐
-       │  START   │
-       └────┬─────┘
-            ▼
-       ┌──────────┐      Plan-only
-       │ Planner  ├────────────────────► FINISH
-       └────┬─────┘
-            ▼ Approved
-    ┌───────┴───────────────┐
-    │                       │
-    ▼ (single file)         ▼ (multi-file / batch)
-┌───────┐             ┌────────────────┐
-│ Coder │             │ Parallel Coder │
-└───┬───┘             └───────┬────────┘
-    │                         │
-    └───────────┬─────────────┘
-                ▼
-          ┌──────────┐
-          │  Tester  │◄────────────┐
-          └─────┬────┘             │
-                │ Tests fail       │ Repair loop
-                ├──────────────────┘ (max 2 attempts)
-                ▼ Tests pass / done
-           ┌────────┐
-           │ FINISH │
-           └────────┘
-```
-
-- **Planner**: Gathers relevant context, queries the model, and creates a step-by-step strategy.
-- **Coder**: Implements minimal changes. For tasks touching multiple files or using keywords like "multiple", "several", or "batch", `devx` automatically routes to **Parallel Coder**, which batch-reads files and generates coordinated diffs.
-- **Tester**: Executes test and lint commands in parallel to verify the implementation. If tests fail, it enters a bounded repair loop (up to 2 repair attempts with revised code from the coder).
-
-### 2. Approval Gates
-
-Whenever the agent wants to touch your filesystem or execute a shell command, execution pauses. You see:
-- Action type (`write`, `replace`, or `shell`)
-- The target file or command
-- A unified diff preview of the proposed changes
-
-You decide whether to proceed (`y`) or decline (`n`). By default, all file writes and shell commands require approval (`DEVX_APPROVAL_REQUIRED=true` by default). You can use `--approve-all` only in trusted, isolated workspaces.
-
-File **reads** are guarded too: every file the agent opens is scanned for API keys, tokens, and private keys. With `DEVX_SECRET_SCAN=warn` (the default) you get a warning; `redact` masks matches before they reach the model, and `block` refuses the read entirely. Writes are scanned on the same path — in `block` mode a write whose content contains a credential is refused, so a secret can't be persisted to disk either.
-
-### 3. Persistent SQLite Sessions
-
-Every session is identified by an ID and saved in `~/.devx/sessions.db`.
-- Resume any session with `devx ask --session <id>` or `/session use <id>` in the TUI.
-- View events with `devx session events <id>`.
-- Export/import sessions to share debugging runs with teammates.
-
-### 4. `@` File Mentions
-
-Use `@path/to/file` in prompts to explicitly pull files into the agent's context:
+### Common CLI Tasks
 
 ```bash
-devx ask "add a retry decorator to @src/api/client.py based on @src/utils/retry.py"
-```
-
-In the TUI, typing `@` opens fuzzy completion for paths within the workspace.
-
-### 5. Workspace Backends: Local, SSH, and Container
-
-`devx` runs the same agent against three kinds of workspace:
-
-- **Local** (default): the current directory (override with `DEVX_WORKSPACE`).
-- **SSH**: `--remote user@host:/path` — the agent reads and edits files on the remote host over SFTP, and commands run in a remote shell with process-group cancellation (no orphaned background jobs).
-- **Container**: `--container container://<name>/path` — operations run via `docker exec` against an already-running container; no bind mount is required.
-
-Governance does not change when the workspace moves off-machine: the same approval prompts, the same hash-guarded change journal, the same `devx verify` drift checks, and the same `devx audit export` trail. See [Governed remote execution](governed-remote.md) for the full guarantees.
-
----
-
-## 4. Your First Vibe Session
-
-### Scenario A: Inspect and Understand
-
-You just joined a repository and want a high-level walkthrough:
-
-```bash
-devx ask "give me a guided tour of the architecture starting with @src/devx/cli/app.py"
-```
-
-The agent reads the mentioned file, traces dependencies, and returns a concise, structured overview.
-
-### Scenario B: Fix a Bug (Plan-First)
-
-By default, CLI commands use **plan-first** mode:
-
-```bash
-devx ask "fix the off-by-one error in @src/parser.py when reading trailing newlines"
-```
-
-1. **Step 1 (Plan Preview)**: `devx` displays the generated plan and asks:
-   ```text
-   Proceed with this plan? [y/N]: y
-   ```
-2. **Step 2 (Diff Review)**: The coder generates a patch. You see:
-   ```diff
-   --- src/parser.py
-   +++ src/parser.py
-   @@ -42,3 +42,3 @@
-   -    for i in range(len(lines) - 1):
-   +    for i in range(len(lines)):
-   ```
-3. **Step 3 (Approval & Testing)**: You approve the diff; `devx` writes the file and runs tests to verify the fix.
-
-### Scenario C: Refactor with Undo Safety
-
-Need to restructure code but worried about breaking things?
-
-```bash
-# In the TUI:
-> refactor @src/auth.py to use dependency injection for token verification
-```
-
-Review the plan, approve the edits, and check tests. If you dislike the result:
-
-```text
-> /undo
-Restored src/auth.py from backup
-```
-
-The file returns immediately to its exact pre-run hash.
-
----
-
-## 5. CLI Cheat Sheet
-
-### `devx ask`
-
-```bash
-# Standard one-shot task (plan-first by default)
-devx ask "refactor database connection pool in @src/db.py"
-
-# Preview plan without writing any code or running commands
-devx ask --plan-only "architect a migration to PostgreSQL"
+# Plan-only mode (preview plan without making any changes)
+devx ask --plan-only "architect database migration to PostgreSQL"
 
 # Skip the initial plan confirmation prompt
-devx ask --no-plan-first "quick typo fix in @README.md"
+devx ask --no-plan-first "fix typo in @README.md"
 
-# Auto-approve all operations (use only in isolated/trusted containers)
-devx ask --approve-all "run lint and format all files"
+# Auto-approve all edits (use only in isolated/trusted containers)
+devx ask --approve-all "run pytest and format all files"
 
 # Continue a named session
-devx ask --session feature-auth "now add rate limiting to login"
+devx ask --session feature-auth "add rate limiting to the token endpoint"
 
-# Run against a remote server directory over SSH (direct URI)
-devx ask "fix healthcheck in @app.py" --remote ssh://ubuntu@192.168.1.100/srv/app --ssh-key ~/.ssh/id_ed25519
+# Remote server development over SSH
+devx ask "fix healthcheck in @app.py" --remote dev-box:/srv/app
 
-# Run using ~/.ssh/config host alias (supports ProxyJump / bastion jump-hosts)
-devx ask "run test suite and fix failing tests" --remote dev-box:/srv/app
+# Docker container development (zero bind mounts required)
+devx ask "run pytest" --container container://devx-lab-8f12a3bc/config/repo
 
-# Preview remote changes in plan-only mode
-devx ask --plan-only "architect payment webhook" --remote dev-box:/srv/app
+# Revert a file touched in the last run
+devx changes reject src/auth.py
 
-# Work inside a running container (docker exec; no bind mount required)
-devx ask "patch @app.py and run pytest" --container container://devx-lab-a1b2c3d4/config/repo
+# Verify workspace drift against change journal
+devx verify
 
-# Structured JSON output for CI or scripting
-devx ask --json "list all public API functions in @src/app.py"
-```
-
-### `devx init`
-
-```bash
-# Full-screen TUI setup wizard
-devx init
-
-# Scripted non-interactive setup
-devx init -p openai -m gpt-4o -k "$API_KEY" -y
-
-# Zero-cost setup with OpenRouter free models router
-devx init -p openrouter -m openrouter/free -k "$OPENROUTER_API_KEY" -y
-```
-
-### `devx session`
-
-```bash
-# List all saved sessions
-devx session list
-
-# View structured event log
-devx session events <SESSION_ID>
-
-# Export session to JSON file
-devx session export <SESSION_ID> backup.json
-
-# Import session from JSON file
-devx session import backup.json
-
-# Manage the Dead Letter Queue (DLQ) for failed runs
-devx session dlq                  # View failed runs in DLQ
-devx session dlq-retry <ENTRY_ID> # Retry a failed run
-devx session dlq-remove <ENTRY_ID># Remove a DLQ entry
-```
-
-### `devx index`
-
-Build local semantic search embeddings for your workspace:
-
-```bash
-# One-time indexing
-devx index
-
-# Continuous file-watcher mode (re-indexes on save)
-devx index --watch
-
-# Force full rebuild of the index
-devx index --force
-```
-
-### `devx health` & `devx metrics`
-
-```bash
-# Component health checks
-devx health
-devx health --json
-
-# Observability metrics export (Prometheus or JSON)
-devx metrics --format prometheus
-devx metrics --format json
-```
-
-### `devx doctor`
-
-Local setup check, or — with `--remote` — a full preflight of an SSH workspace before you run anything against it:
-
-```bash
-# Local: provider config, optional packages, session DB
-devx doctor
-devx doctor --json
-
-# Remote preflight: connection, auth, path, writability, git, virtualenv
-devx doctor --remote deploy@host:/srv/app --ssh-key ~/.ssh/id_ed25519
-```
-
-The remote preflight exits non-zero if anything is broken — cheap insurance before a long run.
-
-### `devx usage`
-
-Token spend and estimated USD cost, aggregating per session/run or across everything, using a per-model pricing table:
-
-```bash
-devx usage                          # all recorded usage
-devx usage --session my-session --json
-devx usage --run 4f2a1c --markdown  # single-run cost receipt
-```
-
-Models without a known price are reported as *unpriced* rather than estimated.
-
-Usage is recorded automatically from every LLM call (planning, agent streaming),
-so receipts reflect real token spend. `--run` receipts aggregate per run
-regardless of the key the rows landed under — session id, session name, or an
-anonymous run — so a single run's cost is always summed correctly.
-
-### `devx audit`
-
-Export a portable audit trail — sessions, agent events, journal changes, the dead-letter queue, and token usage — in one stream:
-
-```bash
-devx audit export --format jsonl --out audit.jsonl
-devx audit export --session my-session --format json
-```
-
-### `devx changes`
-
-Review the hash-guarded change journal and keep or revert each file individually:
-
-```bash
-devx changes list                     # most recent run's changes
-devx changes list --run 4f2a1c        # a specific run
-devx changes accept src/parser.py     # keep (defaults to the most recent run)
-devx changes reject src/legacy.py --run 4f2a1c   # hash-guarded revert
-```
-
-`reject` restores the exact pre-run bytes on the same backend the run used (`--remote` / `--container`) and refuses to clobber a file that changed since the run.
-
-### `devx verify`
-
-Check the workspace against the journal — every change is `intact`, `reverted`, `conflict`, or `missing`:
-
-```bash
-devx verify                          # whole journal
-devx verify --run 4f2a1c             # one run
-devx verify --remote dev-box:/srv/app  # verify the remote workspace
-devx verify --json
-```
-
-Exits `1` if any change is in conflict or missing — hook it into your CI after an agent run.
-
-### `devx scan-secrets`
-
-Sweep files or whole trees for API keys, tokens, and private-key blocks:
-
-```bash
-devx scan-secrets                    # whole workspace
-devx scan-secrets src/               # a specific path (file or directory)
-devx scan-secrets --json             # machine-readable hits
-```
-
-Exits `1` if anything is found, so it can gate CI or a pre-commit stage.
-
-### `devx report`
-
-Render a single PR-ready summary of a session or run — agent event timeline, journal changes, lint/test results, and token cost:
-
-```bash
-devx report my-session                # Markdown to stdout
-devx report 4f2a1c --out pr-body.md   # write a PR description
-devx report my-session --json
-```
-
-### `devx lab`
-
-Spin up a disposable, throwaway remote workspace container for demos, onboarding, or scratch work:
-
-```bash
-devx lab up    # prints ready-to-paste --remote / --container URIs
-devx lab down <container-name>   # tear it down
-```
-
-> Prefer a declarative setup? The `docker-compose.yml` at the repo root boots the
-> identical workspace (`docker compose up -d`).
-
----
-
-## 6. TUI Workflow Guide
-
-Start the interactive terminal UI with:
-
-```bash
-devx tui
-# Or resume an existing session:
-devx tui --session feature-auth
-```
-
-### Interface Layout
-
-- **Top Bar**: Active provider, model, workspace path, and session status.
-- **Main Transcript**: Streaming agent output, user queries, diffs, and test logs.
-- **Bottom Bar**: Context status, progress indicators, and keyboard shortcuts.
-- **Input Area**: Prompt input with `@` mention and `/` command autocompletion.
-
-### Slash Commands
-
-| Command | Description |
-|---|---|
-| `/setup` | Open provider, model, base URL, and API key configuration dialog |
-| `/provider` | List or select active LLM provider (`/provider use anthropic`) |
-| `/model` | Browse curated coding models or live provider models (`/model live`) |
-| `/diff` | Display the current bounded Git diff |
-| `/undo` | Roll back approved changes from the previous run |
-| `/plan <task>` | Create a plan without modifying files or running commands |
-| `/cancel` | Cancel an active agent run immediately |
-| `/session` | List or switch active sessions (`/session use <id>`) |
-| `/remote` | Connect or disconnect remote SSH workspaces (`/remote connect dev-box:/srv/app`) |
-| `/copy` | Copy transcript text to clipboard |
-| `/clear` | Clear the transcript screen (`Ctrl+L`) |
-| `/config show` | Display active configuration with masked API keys |
-| `/help` | Show command help or topic details (`/help shortcuts`) |
-
-### Keyboard Shortcuts
-
-- `F1` — Open Help panel
-- `Ctrl+C` — Cancel the active run (or copy the transcript when idle)
-- `Ctrl+C` twice — Quit the TUI
-- `Ctrl+L` — Clear transcript
-- `F2` or `Ctrl+Insert` — Copy transcript to the OS clipboard
-- `Ctrl+Q` — Quit the TUI
-- `Right Arrow` — Accept autocomplete suggestion for `@` mentions or `/` commands
-
-> **Clipboard:** transcript copies use the operating system's default clipboard
-> (`clip` on Windows, `pbcopy` on macOS, `wl-copy`/`xclip`/`xsel` on Linux). On
-> terminals without a clip tool (e.g. minimal Linux or over SSH), devx falls
-> back to the terminal's OSC 52 clipboard, then to tkinter. The status bar shows
-> which mechanism was used.
-
----
-
-## 7. Common Workflows
-
-### 1. Bug Hunting & Test-Driven Fixing
-
-```text
-> write a failing test for invalid email addresses in @tests/test_auth.py, then update @src/auth.py until all tests pass
-```
-
-1. Agent creates `test_invalid_email` in `tests/test_auth.py`.
-2. Agent runs `pytest` and verifies it fails.
-3. Agent patches `src/auth.py`.
-4. Agent runs `pytest` again and confirms green.
-
-### 2. Multi-File Refactoring
-
-When tasks touch more than 3 files or mention "multiple/batch", `devx` uses **Parallel Coder**:
-
-```text
-> rename the UserProfile model to AccountProfile across @src/models.py, @src/views.py, and @tests/test_models.py
-```
-
-`devx` batch-reads all candidate files, plans the coordinated rename, generates unified diffs for each file, and runs the test suite.
-
-### 3. Safe Exploration
-
-```text
-> /plan how should we implement webhook signature verification?
-```
-
-The agent inspects existing webhooks, suggests the cryptographic algorithm and error handling, and formats the plan without modifying any code.
-
-### 4. Remote Server Development (SSH)
-
-Work directly on remote cloud instances, staging servers, or development containers without leaving your local environment:
-
-```bash
-# 1. Direct connection over SSH
-devx ask "profile slow queries in @api/handlers.py and run pytest" --remote ssh://deploy@staging-box:22/var/www/app --ssh-key ~/.ssh/id_rsa
-
-# 2. Or using ~/.ssh/config aliases (supports ProxyJump, custom ports, bastion jump-hosts)
-devx ask "patch celery retry policy in @tasks.py" --remote bastion-worker:/home/ubuntu/service
-
-# 3. In the interactive TUI:
-> /remote connect dev-server:/srv/app
-Switched to remote SSH workspace: dev-server:/srv/app
-> run pytest and fix failing tests in @tests/test_api.py
-```
-
-- **Client-Side Safety**: All diffs, approvals, and destructive command blockers continue to run locally before touching the remote network.
-- **Remote Testing**: Runs remote test suites directly on the remote server with automatic `.venv` activation.
-- **Rollback Safety**: Full `/undo` support plus file-by-file `devx changes reject` to revert remote edits exactly, and `devx verify` to detect drift afterwards.
-- **Governed by default**: Layer a policy preset on top for hard constraints — `DEVX_POLICY_PRESET=strict devx ask "..." --remote <uri>` allows execution only on the remote and refuses local writes.
-
-The identical workflow runs inside a container: `devx ask "..." --container container://<name>/path` (see `devx lab` below for a throwaway one).
-
-### 5. Change Review & Drift Verification
-
-Every approved edit lands in a SQLite change journal with before/after hashes — a lightweight "review the agent's work" loop you can run even after the session is over:
-
-```bash
-devx changes list                 # what did the agent touch?
-devx verify                       # does the workspace still match the journal?
-devx changes reject src/legacy.py # drop one file, hash-guarded
-```
-
-`devx verify` reports each change as `intact` (untouched), `reverted` (already undone), `conflict` (the file changed since the run), or `missing` (deleted). It exits `1` on conflict/missing, so it slots into CI after an agent run.
-
-Remote and container runs record each change's backend-relative path in the journal, so `devx changes reject` and `devx verify --remote`/`--container` resolve files to the right spot on the remote/container root — previously a recorded local path could not be mapped back reliably, and remote drift checks reported everything as `missing`.
-
-### 6. Secret Hygiene (`devx scan-secrets`)
-
-Sweep before committing or opening a PR:
-
-```bash
+# Pre-commit secret sweep
 devx scan-secrets src/
+
+# PR summary and token cost receipt
+devx report my-session --out pr-body.md
+devx usage --run 4f2a1c --markdown
 ```
 
-Each hit shows `file:line  kind  snippet`, and the command exits `1` on any hit — wire it into CI or a pre-commit hook. The same scanner runs on every agent file *read or write* when `DEVX_SECRET_SCAN` is `warn`/`redact`/`block` (in `block` mode a write containing a credential is refused). Placeholder and test keys legitimately trip it, so scope sweeps to real code or treat the tripwire as a deliberate gate.
+### Common TUI Shortcuts & Commands
 
-### 7. PR-Ready Reports & Cost Receipts
-
-Turn a finished session into a PR description and a spend summary:
-
-```bash
-devx report my-session --out pr-body.md   # timeline + changes + tests + cost
-devx usage --run 4f2a1c --markdown        # one-run cost receipt
-```
-
-`devx report` accepts a session id/name *or* a run id and combines the agent event timeline, journal changes, lint/test results, and token cost into one document. `devx usage --run --markdown` renders an itemized cost receipt for a single run.
-
-### 8. Disposable Remote Workspace (`devx lab`)
-
-Try governed remote execution with zero infrastructure:
-
-```bash
-devx lab up
-# Started disposable remote workspace devx-lab-a1b2c3d4
-#   remote:    devx ask --accept-new-keys --remote ssh://devx@127.0.0.1:49153/config/repo --approve-all 'your task here'
-#   container: devx ask --container container://devx-lab-a1b2c3d4/config/repo --approve-all 'your task here'
-#   doctor:    devx doctor --accept-new-keys --remote ssh://devx@127.0.0.1:49153/config/repo
-#   (Every lab container gets a fresh host key; --accept-new-keys auto-trusts this one-time throwaway key.)
-#   stop:      devx lab down devx-lab-a1b2c3d4
-```
-
-The lab container binds to `127.0.0.1` with a random host port — never exposed to the network. Each boot generates a fresh host key, which is why the printed SSH one-liner includes `--accept-new-keys`; for a persistent server, pin the key in a `known_hosts` file instead (`DEVX_SSH_KNOWN_HOSTS`). The repo's `docker-compose.yml` (`docker compose up -d`) boots the identical workspace declaratively.
-
----
-
-## 8. Configuration That Just Works
-
-Configuration is resolved in order of precedence:
-1. Environment variables (`DEVX_*` or legacy `DEV_*`)
-2. Workspace `.env`
-3. User global config (`~/.devx/config.env`)
-4. Non-secret project config (`.devx/config.json`)
-5. Built-in defaults
-
-### Key Environment Variables
-
-```env
-# Provider and Model
-DEVX_PROVIDER=openrouter          # openrouter, openai, anthropic, google, azure, ollama
-DEVX_MODEL=openrouter/free        # 200k context window, free inference, tool calling
-DEVX_API_KEY=sk-or-v1-...
-DEVX_BASE_URL=https://openrouter.ai/api/v1
-
-# Workflows & Bounds
-DEVX_APPROVAL_REQUIRED=true       # Always keep true for safety
-DEVX_TEST_COMMAND=pytest          # Auto-detected if omitted
-DEVX_LINT_COMMAND=ruff check      # Optional linter run before/alongside tests
-DEVX_MAX_ITERATIONS=8             # Maximum planner-coder-tester loops
-DEVX_COMMAND_TIMEOUT=120          # Shell execution timeout in seconds
-
-# Local Token Optimization
-DEVX_EMBEDDINGS_ENABLED=true                # Enable local ONNX INT8 embeddings
-DEVX_DIAGNOSTIC_DISTILLATION_ENABLED=true   # Distill test failures to cut repair-loop tokens (workload-dependent)
-DEVX_DECOUPLED_CONTEXT_ENABLED=true         # Decouple planner/coder contexts to shrink initial prompts
-
-# Remote SSH Workspace
-DEVX_REMOTE_SSH=ssh://ubuntu@host/srv/app   # Remote workspace URI or ~/.ssh/config host alias
-DEVX_SSH_KEY=~/.ssh/id_ed25519              # Optional private key path override
-DEVX_SSH_KNOWN_HOSTS=~/.ssh/known_hosts     # Optional: verify host keys against this file (unknown hosts refused)
-DEVX_SSH_ALLOW_UNKNOWN_KEYS=false           # true only for throwaway/lab targets (auto-adds a new host key)
-
-# Container Workspace
-DEVX_CONTAINER=container://devx-lab-a1b2c3d4/config/repo  # Default container URI (or "container" in .devx/config.json)
-
-# Governance & Trust
-DEVX_SECRET_SCAN=warn       # off | warn | redact | block — scan agent file reads and writes for secrets
-DEVX_POLICY_PRESET=default  # default | remote_only | deny_local_writes | protected | strict
-DEVX_SESSION_DB=~/.devx/sessions.db   # SQLite session + change-journal database
-DEVX_CACHE_DB=~/.devx/cache.db        # Semantic cache database
-```
-
-### Project Rules (`.devx/config.json`)
-
-Define granular permissions for commands and file access:
-
-```json
-{
-  "permissions": [
-    { "action": "read", "resource": "**", "effect": "allow" },
-    { "action": "edit", "resource": "tests/**", "effect": "allow" },
-    { "action": "shell", "resource": "git status", "effect": "allow" },
-    { "action": "shell", "resource": "rm *", "effect": "deny" }
-  ],
-  "context_compaction": {
-    "enabled": true,
-    "max_messages": 24,
-    "max_chars": 24000,
-    "summary_chars": 4000
-  }
-}
-```
-
-### Policy Presets
-
-Presets bundle hard constraints for governed runs — especially remote/container ones. Select with `DEVX_POLICY_PRESET` or `"policy_preset"` in `.devx/config.json`:
-
-| Preset | Effect |
+| Key / Command | Action |
 |---|---|
-| `default` | Prompt for edits and shell commands on the selected workspace |
-| `remote_only` | Refuse to execute shell commands on the local machine |
-| `deny_local_writes` | Refuse to modify the local filesystem |
-| `protected` | Always require approval for writes to sensitive files (`.env*`, keys, secrets) |
-| `strict` | Remote execution only, no local writes (recommended for governed remote runs) |
-
-```bash
-DEVX_POLICY_PRESET=strict devx ask "refactor the parser" --remote deploy@prod:/srv/app
-```
-
-Presets are enforced regardless of other approval settings: a local write under `deny_local_writes`, or a local command under `remote_only`, is refused before the tool runs.
-
-### Ready-Made Templates
-
-- **`.env.example`** (repo root) lists every supported variable — copy it to `.env` and fill in `DEVX_API_KEY`.
-- **`docker-compose.yml`** (repo root) boots the `devx lab` workspace declaratively: `docker compose up -d`.
+| `/setup` | Configure provider, coding model, and API key |
+| `/diff` | Display the current bounded Git diff |
+| `/undo` | Roll back all approved changes from the previous run |
+| `/plan <task>` | Create an implementation plan without modifying files |
+| `/cancel` | Cancel an active agent run immediately |
+| `/session` | List or switch active sessions |
+| `/remote connect <uri>` | Switch to a remote SSH workspace |
+| **Ctrl+C** *(single)* | Cancel active run / copy transcript when idle |
+| **Ctrl+C** *(twice)* | Quit the TUI |
+| **Ctrl+Q** | Quit the TUI with remote backend cleanup |
+| **Ctrl+L** | Clear transcript view |
+| **F1** | Open Help panel |
+| **F2** / **Ctrl+Insert** | Copy transcript to system clipboard |
 
 ---
 
-## 9. Troubleshooting and Recovery
+## Additional References
 
-### 1. Diagnostic Checks
-
-If a provider or command fails:
-
-```bash
-devx doctor
-devx health
-```
-
-For a remote/container workspace, preflight the target the same way — `devx doctor --remote <uri>` checks connection, auth, path, writability, git, and virtualenv before you start.
-
-`devx health` checks:
-- Session database read/write integrity
-- Workspace path permissions
-- LLM provider connectivity and latency
-- Local embedding model status
-
-### 2. Dead Letter Queue (DLQ)
-
-If an agent run fails unexpectedly (e.g. network interruption or API rate limit):
-1. The failed state is saved in the **Dead Letter Queue**.
-2. Inspect the failure:
-   ```bash
-   devx session dlq
-   ```
-3. Retry the execution once the issue is resolved:
-   ```bash
-   devx session dlq-retry <ENTRY_ID>
-   ```
-
-### 3. Rate Limits and Circuit Breakers
-
-`devx` includes an automated **Circuit Breaker** and exponential backoff retry policy for all LLM calls. If a provider returns `429 Rate Limit`:
-- `devx` retries with jitter up to the configured retry count.
-- If repeated failures occur, the circuit breaker opens to prevent runaway token costs and cascading failures.
-- Switch models or providers easily via `/setup` in the TUI or by updating `DEVX_MODEL`.
-
-### 4. Viewing Detailed Logs
-
-For deep troubleshooting, pass `--json-logs` to output machine-readable structured logs with correlation IDs:
-
-```bash
-devx ask --json-logs "debug my task"
-```
-
-### 5. Workspace Drift (`devx verify`)
-
-`devx verify` compares current file hashes with the journal. `conflict` or `missing` means something else touched the file since the run — do **not** force a revert; resolve the drift by hand, then re-run `devx verify` until clean. `reverted` is expected after an intentional `devx changes reject` or `/undo`.
-
-### 6. Secret Scan Tripwires (`devx scan-secrets`)
-
-The scanner exits `1` — and `devx` warns on reads — whenever a value looks like a key, including placeholders (`sk-replace-me`), `.env.example` files, and test fixtures with fake credentials. Conservative by design. Scope the scan to real code (`devx scan-secrets src/`) or keep it as a deliberate CI gate.
-
-### 7. Remote & Container Failures
-
-- **Preflight first**: `devx doctor --remote <uri>` isolates connection, auth, path, or git problems before a long run.
-- **Dropped connections**: the SSH backend transparently re-establishes the transport with backoff (three attempts); a hard failure invalidates the session rather than silently targeting a different host.
-- **`devx lab` won't start**: it needs a working Docker daemon — check `docker info` first. The container binds `127.0.0.1` with a random port, so no firewall changes are needed.
+- [Architecture Guide](architecture.md) — Deep dive into state graphs, process groups, and serialization formats.
+- [Threat Model](threat-model.md) — Attack surfaces, threat actors, and containment boundaries.
+- [Governed Remote Execution](governed-remote.md) — Full security guarantees for SSH and container backends.
+- [Extensibility Guide](extensibility.md) — In-depth guide to writing workspace plugins and MCP integrations.
