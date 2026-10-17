@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
+  issues: write
 
 jobs:
   benchmark:
@@ -52,10 +54,14 @@ jobs:
               for (const r of results.results) {
                 comment += `| ${r.name} | ${r.elapsed_ms.toFixed(2)} | ${JSON.stringify(r.metrics)} |\n`;
               }
-              github.rest.issues.createComment({
-                issue_number: context.issue.number,
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                body: comment
-              });
+              try {
+                await github.rest.issues.createComment({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body: comment
+                });
+              } catch (err) {
+                core.warning(`Could not post benchmark comment to PR: ${err.message}`);
+              }
             }
