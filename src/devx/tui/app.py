@@ -501,6 +501,21 @@ class DevTUI(App):
             self.actions.disconnect_remote()
         elif value == "/remote":
             self._write("Usage: /remote connect <ssh-uri> or /remote disconnect")
+        elif value == "/review" or value.startswith("/review "):
+            focus = value.partition(" ")[2].strip() if value.startswith("/review ") else "all"
+            self.actions.run_review(focus=focus)
+        elif value == "/design" or value.startswith("/design "):
+            kind = value.partition(" ")[2].strip() if value.startswith("/design ") else "flowchart"
+            self.actions.run_design(kind=kind)
+        elif value.startswith("/adr "):
+            adr_title = value.partition(" ")[2].strip()
+            self.actions.create_adr(adr_title)
+        elif value == "/test" or value.startswith("/test "):
+            sub = value.partition(" ")[2].strip() if value.startswith("/test ") else "impact"
+            parts = sub.split(maxsplit=1)
+            action = parts[0] if parts else "impact"
+            target = parts[1] if len(parts) > 1 else ""
+            self.actions.run_test(action=action, target=target)
         elif value.startswith("/"):
             self._write(f"Unknown command: {value.split(maxsplit=1)[0]}. Type /help for commands.")
         else:

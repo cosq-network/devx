@@ -254,12 +254,70 @@ def build_coding_agent(
             return "GH PR CREATE DENIED: request user approval before creating PR."
         return tools.run(cmd, approved=True).output
 
+    @tool
+    def analyze_codebase_topology() -> str:
+        """Analyze workspace module dependencies, entrypoints, and detect circular dependencies."""
+        consume_tool_call()
+        from devx.analysis.ast_scanner import scan_workspace
+        top = scan_workspace(settings.workspace)
+        top.build_internal_graph()
+        cycles = top.detect_circular_dependencies()
+        cycle_msg = f"\nCircular dependencies detected: {cycles}" if cycles else "\nNo circular dependencies detected."
+        return f"Scanned {len(top.modules)} modules in workspace.{cycle_msg}\nTop modules:\n" + "\n".join(f"- {m} (deps: {len(top.get_dependencies(m))})" for m in list(top.modules.keys())[:15])
+
+    @tool
+    def generate_mermaid_diagram(kind: str = "flowchart", focus: str = "all") -> str:
+        """Synthesize a Mermaid architecture diagram ('flowchart', 'class', or 'sequence')."""
+        consume_tool_call()
+        from devx.design.architect import ArchitectureEngine
+        arch = ArchitectureEngine(settings)
+        return arch.generate_diagram(kind=kind, focus=focus)
+
+    @tool
+    def run_targeted_tests(files: list[str]) -> str:
+        """Run tests impacted by the specified source files using Test-Impact Analysis."""
+        consume_tool_call()
+        from devx.test_engine.smart_runner import SmartTestRunner
+        runner = SmartTestRunner(settings)
+        impacted = runner.get_impacted_tests(files)
+        if not impacted:
+            return "No matching test files found for the specified paths."
+        cmd = runner.build_targeted_test_command(impacted)
+        if not cmd:
+            return "Could not construct test command."
+        requires_approval, _ = tools.check_approval("shell", cmd)
+        if requires_approval and not allowed("command", cmd, "Targeted test execution"):
+            tools.cancellation.raise_if_cancelled()
+            return "TEST EXECUTION DENIED: request user approval."
+        return tools.run(cmd, approved=True).output
+
+    @tool
+    def check_test_flakiness(test_target: str, runs: int = 3) -> str:
+        """Probe a test multiple times in isolated processes to verify stability."""
+        consume_tool_call()
+        from devx.test_engine.smart_runner import SmartTestRunner
+        runner = SmartTestRunner(settings)
+        report = runner.check_flakiness(test_target, runs=min(max(runs, 2), 5))
+        return f"Flakiness check for {test_target}: {report.passes}/{report.total_runs} passed ({report.pass_rate:.1f}%). Flaky: {report.is_flaky}. Durations: {report.durations}"
+
+    @tool
+    def inspect_code_review(focus: str = "all") -> str:
+        """Perform automated multi-perspective code review on current git diff."""
+        consume_tool_call()
+        diff_res = tools.git_diff()
+        if not diff_res.ok or not diff_res.output.strip():
+            return "No git diff available to review."
+        from devx.review.reviewer import CodeReviewer
+        rev = CodeReviewer(settings)
+        report = rev.review_diff(diff_res.output, focus=focus)
+        return report.to_markdown()
+
     active_mode = getattr(settings, "mode", "code").strip().lower()
     MODE_ALLOWED_BUILTINS: dict[str, set[str] | None] = {
         "code": None,  # all allowed
-        "architect": {"read_file", "read_files", "search_files"},
-        "review": {"read_file", "read_files", "search_files", "run_command"},
-        "ask": {"read_file", "read_files", "search_files"},
+        "architect": {"read_file", "read_files", "search_files", "analyze_codebase_topology", "generate_mermaid_diagram"},
+        "review": {"read_file", "read_files", "search_files", "run_command", "inspect_code_review", "check_test_flakiness"},
+        "ask": {"read_file", "read_files", "search_files", "analyze_codebase_topology", "generate_mermaid_diagram"},
     }
     allowed_builtins = MODE_ALLOWED_BUILTINS.get(active_mode)
 
@@ -297,6 +355,11 @@ def build_coding_agent(
         "git_commit": git_commit,
         "git_push": git_push,
         "gh_pr_create": gh_pr_create,
+        "analyze_codebase_topology": analyze_codebase_topology,
+        "generate_mermaid_diagram": generate_mermaid_diagram,
+        "run_targeted_tests": run_targeted_tests,
+        "check_test_flakiness": check_test_flakiness,
+        "inspect_code_review": inspect_code_review,
     }
     for name, tool_object in builtins.items():
         if allowed_builtins is not None and name not in allowed_builtins:

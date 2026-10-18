@@ -471,7 +471,21 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
     def tester(state: GraphState) -> GraphState:
         cancellation.raise_if_cancelled()
         emit(state, {"type": "agent_started", "agent": "tester"})
-        command = state.get("test_command") or settings.test_command or detect_test_command(settings.workspace, backend=backend)
+        unit_cmd = getattr(settings, "unit_test_command", "")
+        if not unit_cmd and getattr(settings, "test_impact_enabled", True) and not state.get("test_command"):
+            try:
+                from devx.test_engine.smart_runner import SmartTestRunner
+                runner = SmartTestRunner(settings)
+                impacted = runner.get_impacted_tests()
+                if impacted:
+                    targeted = runner.build_targeted_test_command(impacted)
+                    if targeted:
+                        unit_cmd = targeted
+                        emit(state, {"type": "test_impact_selected", "tests": impacted})
+            except Exception:
+                pass
+
+        command = state.get("test_command") or unit_cmd or settings.test_command or detect_test_command(settings.workspace, backend=backend)
         state["test_command"] = command or ""
         state["test_attempts"] = state.get("test_attempts", 0) + 1
         state["iteration"] = state.get("iteration", 0) + 1
@@ -571,6 +585,29 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
         else:
             state["test_result"] = "No test command detected."
             state["status"] = "completed"
+
+        # Stage 2: Integration tests (if configured and unit tests passed)
+        integ_cmd = getattr(settings, "integration_test_command", "")
+        if state.get("status") == "completed" and integ_cmd:
+            if not approve("command", integ_cmd, "Configured integration test command."):
+                emit(state, {"type": "integration_test_denied"})
+            else:
+                emit(state, {"type": "integration_test_started"})
+                integ_res = tools.run(integ_cmd, approved=True)
+                raw_integ_output = integ_res.output or f"exit code: {integ_res.exit_code}"
+                if not integ_res.ok:
+                    max_diag_chars = int(getattr(settings, "diagnostic_distillation_max_chars", 4000))
+                    distilled = (
+                        distill_test_output(raw_integ_output, max_diag_chars)
+                        if getattr(settings, "diagnostic_distillation_enabled", True)
+                        else raw_integ_output
+                    )
+                    state["test_result"] = f"Integration tests failed:\n{distilled}"
+                    state["status"] = "tests_failed"
+                    state["repair_attempts"] = state.get("repair_attempts", 0)
+                    emit(state, {"type": "integration_test_finished", "ok": False, "exit_code": integ_res.exit_code})
+                else:
+                    emit(state, {"type": "integration_test_finished", "ok": True, "exit_code": 0})
         
         append_state_message(state, "tester", state.get("test_result", ""))
         state["active_agent"] = "supervisor"

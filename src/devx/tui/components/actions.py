@@ -294,3 +294,71 @@ class ActionHandlers:
         object.__setattr__(settings, "remote_ssh", "")
         self.app.query_one("#status-text", Static).update("● ready")
         self.app._write("Disconnected remote workspace. Reverted to local workspace.")
+
+    def run_review(self, focus: str = "all") -> None:
+        from devx.config import Settings
+        from devx.harness.permissions import PermissionPolicy
+        from devx.harness.tools import WorkspaceTools
+        from devx.review.reviewer import CodeReviewer
+
+        settings = Settings.load()
+        backend = getattr(self.app, "_remote_backend", None)
+        tools = WorkspaceTools(PermissionPolicy.from_settings(settings), backend=backend)
+        diff_res = tools.git_diff()
+        if not diff_res.ok or not diff_res.output.strip():
+            self.app._write("No uncommitted git changes to review.")
+            return
+
+        self.app._write("🔍 Running multi-perspective code review...")
+        rev = CodeReviewer(settings)
+        report = rev.review_diff(diff_res.output, focus=focus)
+        saved = rev.save_report(report, name="tui")
+        self.app._write(f"{report.to_markdown()}\n*Report saved to {saved}*")
+
+    def run_design(self, kind: str = "flowchart", focus: str = "all") -> None:
+        from devx.config import Settings
+        from devx.design.architect import ArchitectureEngine
+
+        settings = Settings.load()
+        engine = ArchitectureEngine(settings)
+        rendered = engine.generate_diagram(kind=kind or "flowchart", focus=focus)
+        self.app._write(f"```mermaid\n{rendered}\n```")
+
+    def create_adr(self, title: str) -> None:
+        from devx.config import Settings
+        from devx.design.architect import ArchitectureEngine
+
+        if not title:
+            self.app._write("Usage: /adr <title>")
+            return
+
+        settings = Settings.load()
+        engine = ArchitectureEngine(settings)
+        record, path = engine.create_adr(
+            title=title,
+            context=f"Architecture context for {title}.",
+            decision="Adopted proposed architectural decision.",
+            consequences="Maintains clean boundaries and ensures testability.",
+        )
+        self.app._write(f"Created ADR-{record.number:04d}: `{path}`")
+
+    def run_test(self, action: str = "impact", target: str = "") -> None:
+        from devx.config import Settings
+        from devx.test_engine.smart_runner import SmartTestRunner
+
+        settings = Settings.load()
+        runner = SmartTestRunner(settings)
+
+        if action == "flaky":
+            if not target:
+                self.app._write("Usage: /test flaky <test_path>")
+                return
+            self.app._write(f"Probing {target} for flakiness (3 runs)...")
+            rep = runner.check_flakiness(target, runs=3)
+            self.app._write(f"Flakiness check: {rep.passes}/{rep.total_runs} passed ({rep.pass_rate:.1f}%). Flaky: {rep.is_flaky}.")
+        else:
+            impacted = runner.get_impacted_tests([target] if target else None)
+            if not impacted:
+                self.app._write("No impacted test files detected for recent changes.")
+            else:
+                self.app._write(f"Impacted test files ({len(impacted)}):\n" + "\n".join(f"- {t}" for t in impacted))

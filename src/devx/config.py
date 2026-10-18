@@ -111,6 +111,10 @@ class Settings(BaseModel):
         default=CONTEXT_BUDGET_MODE_FIXED, description="Context budgeting mode: fixed or adaptive"
     )
     lint_command: str = Field(default="", description="Optional lint command")
+    unit_test_command: str = Field(default="", description="Optional command dedicated for fast unit tests")
+    integration_test_command: str = Field(default="", description="Optional command dedicated for integration tests")
+    test_impact_enabled: bool = Field(default=True, description="Enable Test-Impact Analysis (TIA) for selective testing")
+    review_linter_enabled: bool = Field(default=True, description="Enable local linter diagnostics in code review")
 
     # Token optimization
     embeddings_enabled: bool = Field(default=False, description="Enable local ONNX embeddings")
@@ -392,6 +396,10 @@ class Settings(BaseModel):
         model = get("DEVX_MODEL", "gpt-4o", "DEV_MODEL")
         provider = get("DEVX_PROVIDER", "openai", "DEV_PROVIDER")
         test_command = get("DEVX_TEST_COMMAND", "", "DEV_TEST_COMMAND")
+        unit_test_command = get("DEVX_UNIT_TEST_COMMAND", str(project.get("unit_test_command", "")), "DEV_UNIT_TEST_COMMAND")
+        integration_test_command = get("DEVX_INTEGRATION_TEST_COMMAND", str(project.get("integration_test_command", "")), "DEV_INTEGRATION_TEST_COMMAND")
+        test_impact_enabled = boolean("DEVX_TEST_IMPACT", bool(project.get("test_impact_enabled", True)), "DEV_TEST_IMPACT")
+        review_linter_enabled = boolean("DEVX_REVIEW_LINTER", bool(project.get("review_linter_enabled", True)), "DEV_REVIEW_LINTER")
         lint_command = get("DEVX_LINT_COMMAND", "", "DEV_LINT_COMMAND")
         embedding_model = get(
             "DEVX_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2", "DEV_EMBEDDING_MODEL"
@@ -436,6 +444,10 @@ class Settings(BaseModel):
             max_tool_calls=max_tool_calls,
             command_timeout=float(get("DEVX_COMMAND_TIMEOUT", "120", "DEV_COMMAND_TIMEOUT")),
             test_command=test_command,
+            unit_test_command=unit_test_command,
+            integration_test_command=integration_test_command,
+            test_impact_enabled=test_impact_enabled,
+            review_linter_enabled=review_linter_enabled,
             max_file_bytes=max_file_bytes,
             max_context_files=max_context_files,
             lint_command=lint_command,

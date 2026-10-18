@@ -1148,3 +1148,146 @@ if typer is not None:
             print(f"Imported session {imported_id}")
         else:
             raise typer.BadParameter("Action must be list, fork, tree, compact, rename, delete, export, or import")
+
+    @app.command()
+    def review(
+        staged: bool = typer.Option(False, "--staged", "-s", help="Review staged changes"),
+        branch: str | None = typer.Option(None, "--branch", "-b", help="Review changes against branch"),
+        commit: str | None = typer.Option(None, "--commit", "-c", help="Review specific commit"),
+        save: bool = typer.Option(True, "--save/--no-save", help="Save review report to .devx/reviews/"),
+        json_output: bool = typer.Option(False, "--json", help="Output review in JSON format"),
+    ):
+        """Perform automated multi-perspective code review with local static analysis pre-checks."""
+        import subprocess
+        from devx.review.reviewer import CodeReviewer
+
+        settings = _load_settings()
+        rev = CodeReviewer(settings)
+
+        # Get diff
+        if commit:
+            diff_cmd = ["git", "show", "--no-ext-diff", commit]
+        elif branch:
+            diff_cmd = ["git", "diff", "--no-ext-diff", f"{branch}...HEAD"]
+        elif staged:
+            diff_cmd = ["git", "diff", "--no-ext-diff", "--staged"]
+        else:
+            diff_cmd = ["git", "diff", "--no-ext-diff", "HEAD"]
+
+        try:
+            res = subprocess.run(diff_cmd, cwd=str(settings.workspace), capture_output=True, text=True, check=False)
+            diff_text = res.stdout
+        except Exception as exc:
+            raise typer.BadParameter(f"Failed to get git diff: {exc}")
+
+        if not diff_text.strip():
+            typer.echo("No git diff detected to review.")
+            return
+
+        typer.echo("🔍 Running multi-perspective code review...")
+        report = rev.review_diff(diff_text)
+
+        if save:
+            saved_path = rev.save_report(report, name="cli")
+            typer.echo(f"Saved review report to: {saved_path}\n")
+
+        if json_output:
+            data = {
+                "verdict": report.verdict,
+                "summary": report.summary,
+                "risk_factors": report.risk_factors,
+                "linter_findings": report.linter_findings,
+                "comments": [
+                    {
+                        "file": c.file,
+                        "line": c.line,
+                        "severity": c.severity,
+                        "critic": c.critic,
+                        "message": c.message,
+                        "suggested_patch": c.suggested_patch,
+                    }
+                    for c in report.comments
+                ],
+            }
+            print(json.dumps(data, indent=2))
+        else:
+            print(report.to_markdown())
+
+    @app.command()
+    def design(
+        diagram: str | None = typer.Option(None, "--diagram", "-d", help="Generate diagram: flowchart, class, or sequence"),
+        focus: str = typer.Option("all", "--focus", "-f", help="Focus module name for diagram"),
+        adr: str | None = typer.Option(None, "--adr", help="Create new ADR with title"),
+        explore: str | None = typer.Option(None, "--explore", "-e", help="Deep research: trace symbol references across codebase"),
+    ):
+        """Analyze system architecture, synthesize Mermaid diagrams, ADRs, or trace symbols."""
+        from devx.design.architect import ArchitectureEngine
+
+        settings = _load_settings()
+        engine = ArchitectureEngine(settings)
+
+        if adr:
+            context = f"Decision regarding {adr} in project architecture."
+            record, path = engine.create_adr(
+                title=adr,
+                context=context,
+                decision="Adopted proposed architectural pattern.",
+                consequences="Improves modularity, testability, and clarity.",
+            )
+            typer.echo(f"Created ADR-{record.number:04d}: {path}")
+            return
+
+        if explore:
+            typer.echo(f"Tracing symbol '{explore}'...")
+            res = engine.deep_research_trace(explore)
+            print(json.dumps(res, indent=2))
+            return
+
+        # Default or explicit diagram
+        diag_kind = diagram or "flowchart"
+        rendered = engine.generate_diagram(kind=diag_kind, focus=focus)
+        print(rendered)
+
+    @app.command("test")
+    def test_cmd(
+        action: str = typer.Argument("unit", help="unit, integration, impact, or flaky"),
+        target: str | None = typer.Argument(None, help="Target test or source file"),
+        runs: int = typer.Option(3, "--runs", "-r", help="Number of runs for flaky check"),
+    ):
+        """Run intelligent test selection, flakiness probe, or integration tests."""
+        import subprocess
+        from devx.test_engine.smart_runner import SmartTestRunner
+
+        settings = _load_settings()
+        runner = SmartTestRunner(settings)
+
+        if action == "impact":
+            impacted = runner.get_impacted_tests([target] if target else None)
+            if not impacted:
+                typer.echo("No impacted tests detected for modified files.")
+                return
+            typer.echo(f"Impacted test files ({len(impacted)}):")
+            for t in impacted:
+                typer.echo(f"  - {t}")
+            cmd = runner.build_targeted_test_command(impacted)
+            typer.echo(f"\nTargeted command: {cmd}")
+        elif action == "flaky":
+            if not target:
+                raise typer.BadParameter("Provide test target to probe: devx test flaky <test_file_or_spec>")
+            typer.echo(f"Probing '{target}' for flakiness over {runs} runs...")
+            report = runner.check_flakiness(target, runs=runs)
+            typer.echo(f"Result: {report.passes}/{report.total_runs} passed ({report.pass_rate:.1f}%)")
+            typer.echo(f"Flaky: {report.is_flaky}")
+            typer.echo(f"Durations (s): {report.durations}")
+        elif action == "integration":
+            integ_cmd = getattr(settings, "integration_test_command", "") or "pytest tests/integration/ -q"
+            typer.echo(f"Running integration tests: {integ_cmd}")
+            subprocess.run(integ_cmd.split(), cwd=str(settings.workspace), check=False)
+        else:
+            # Unit or targeted
+            unit_cmd = (
+                runner.build_targeted_test_command([target]) if target
+                else getattr(settings, "unit_test_command", "") or "pytest tests/ -q"
+            )
+            typer.echo(f"Running unit tests: {unit_cmd}")
+            subprocess.run(unit_cmd.split(), cwd=str(settings.workspace), check=False)
