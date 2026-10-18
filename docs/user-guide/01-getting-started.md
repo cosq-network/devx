@@ -41,7 +41,19 @@ python --version
 | `dev` | `pytest`, `ruff`, `pytest-cov`, `bandit` | Testing and development tools |
 | `all` | *All runtime extras above* | Complete installation (excludes `dev`) |
 
-### Development / Editable Mode (Recommended)
+### Standard Installation (PyPI / pipx)
+
+You can install `devx` directly from PyPI. We recommend using `pipx` for an isolated global CLI environment, or standard `pip` within a virtual environment:
+
+```bash
+# Recommended: Isolated global CLI installation with pipx
+pipx install "devx-coding-agent[all]"
+
+# Standard virtual environment installation
+pip install "devx-coding-agent[all]"
+```
+
+### Development / Editable Mode (from Source)
 
 Installing in editable mode (`-e`) links the `devx` executable directly to your working repository. Any code modifications under `src/devx` take effect immediately without reinstalling:
 
@@ -223,8 +235,82 @@ In the TUI, you can:
 
 ---
 
+## 7. Upgrading `devx`
+
+When upgrading between versions, your existing sessions, configurations, and embeddings cache are preserved automatically.
+
+### Upgrading via pip or pipx
+
+```bash
+# If installed via pipx:
+pipx upgrade devx-coding-agent
+
+# If installed via pip:
+pip install --upgrade "devx-coding-agent[all]"
+
+# If running in editable development mode:
+git pull origin develop
+pip install -e ".[all]"
+```
+
+### Schema & Configuration Upgrade Guarantees
+
+- **Non-Destructive Database Migrations**: `devx` uses SQLite databases (`~/.devx/sessions.db`, `~/.devx/cache.db`, `~/.devx/knowledge_graph.db`). Schema changes (such as new columns for session branching or DLQ tracking) are applied on startup via idempotent `CREATE TABLE IF NOT EXISTS` and non-destructive `ALTER TABLE ADD COLUMN` migrations. Existing conversations and events are never dropped or mutated.
+- **Backward Compatibility**: `devx` maintains full backward compatibility for environment variable naming (`DEVX_*` with automatic fallback to legacy `DEV_*`) and legacy directory layouts (automatic fallback from `~/.devx/` to `~/.dev/` if an older installation exists).
+
+---
+
+## 8. Uninstalling & Data Purging
+
+### Removing the Package
+
+To remove the `devx` binaries and Python libraries:
+
+```bash
+# If installed via pipx:
+pipx uninstall devx-coding-agent
+
+# If installed via pip:
+pip uninstall devx-coding-agent
+```
+
+### Cleaning Up Local Data & Footprint (Optional)
+
+`pip uninstall` removes only the Python package files from your environment. `devx` stores user session histories, semantic cache, and local embedding models in isolated directories. If you want a complete, pristine purge:
+
+#### Global User State (`~/.devx`)
+Contains your SQLite session store (`sessions.db`), semantic prompt cache (`cache.db`), global knowledge graph (`knowledge_graph.db`), and generated reviews/designs:
+```bash
+# Linux / macOS:
+rm -rf ~/.devx
+
+# Windows (PowerShell):
+Remove-Item -Recurse -Force "$HOME\.devx"
+```
+
+#### Offline Embeddings & ONNX Cache (`~/.cache/devx`)
+Contains downloaded open-weights embedding models (e.g., `all-MiniLM-L6-v2` ONNX INT8) and tokenizers:
+```bash
+# Linux / macOS:
+rm -rf ~/.cache/devx
+
+# Windows (PowerShell):
+Remove-Item -Recurse -Force "$HOME\.cache\devx"
+```
+
+#### Project-Level Workspaces
+Within repositories where you ran `devx init`, remove the local `.devx` configuration and `.env` credentials:
+```bash
+# Inside workspace root:
+rm -rf .devx
+# Optionally remove workspace credentials:
+rm -f .env
+```
+
+---
+
 ## Next Steps
 
 - Explore [Core Concepts](02-core-concepts.md) to understand the agent state machine, approval gates, and session lifecycle.
-- Check out the [CLI Reference](03-cli-reference.md) for a complete catalog of all 17 commands.
+- Check out the [CLI Reference](03-cli-reference.md) for a complete catalog of all commands.
 - Master the [TUI Guide](04-tui-guide.md) to supercharge your terminal workflow.
