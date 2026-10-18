@@ -149,10 +149,23 @@ For the positioning statement, target users, and the core/team feature split, se
 
 ### Dependency Architecture & `pyproject.toml`
 
-`devx` follows modern Python packaging standards (**PEP 517** and **PEP 621** via Hatchling). All dependencies, optional extras, and console entry points are declared directly in [`pyproject.toml`](pyproject.toml) rather than a legacy `requirements.txt`.
+`devx` follows modern Python packaging standards (**PEP 517** and **PEP 621** via Hatchling). All dependencies, optional extras, and console entry points (`devx` and legacy alias `dev`) are declared directly in [`pyproject.toml`](pyproject.toml) rather than a legacy `requirements.txt`.
 
+- **Core Dependencies**: `pydantic>=2.0`, `typer>=0.12`, `textual>=0.70`.
 - **Reproducible CI environments**: Pinned validated dependency versions are tracked in [`constraints.txt`](constraints.txt) (`pip install -c constraints.txt -e ".[all]"`).
 - **Vulnerability scanning**: Audited runtime dependencies are listed in [`requirements-audit.txt`](requirements-audit.txt).
+
+### Standard Installation (PyPI / pipx)
+
+For global standalone CLI usage, we recommend installing with `pipx` into an isolated environment:
+
+```bash
+# Recommended: Isolated global CLI installation
+pipx install "devx-coding-agent[all]"
+
+# Or inside an active Python virtual environment:
+pip install "devx-coding-agent[all]"
+```
 
 ### From source (recommended for development)
 
@@ -185,11 +198,12 @@ pip install -e ".[all]"
 
 ### Make `devx` command available on any directory
 
-Installing `devx` creates a console executable (`devx.exe` on Windows, `devx` on Linux/macOS) in your Python environment's `Scripts` or `bin` directory.
+Installing `devx` creates console executables (`devx` and alias `dev`) in your Python environment's `Scripts` or `bin` directory.
 
 - **Windows PowerShell**: Verify the command resolves globally:
   ```powershell
   where devx
+  where dev
   ```
   If not found, ensure Python's Scripts folder is in your User `PATH`:
   ```powershell
@@ -213,6 +227,38 @@ python -m pip install build
 python -m build
 # Installs from dist/
 pip install "dist/devx_coding_agent-0.2.0.dev0-py3-none-any.whl[all]"
+```
+
+### Upgrading `devx`
+
+When upgrading between versions, your existing sessions, configurations, and embeddings cache are preserved automatically:
+
+```bash
+# If installed via pipx:
+pipx upgrade devx-coding-agent
+
+# If installed via pip:
+pip install --upgrade "devx-coding-agent[all]"
+
+# If developing from source:
+git pull origin develop
+pip install -e ".[all]"
+```
+
+*Schema Guarantees*: `devx` automatically applies non-destructive SQLite migrations (`CREATE TABLE IF NOT EXISTS`, safe column addition) on startup. Backward compatibility is maintained for both `DEVX_*` and legacy `DEV_*` environment variables, as well as `~/.devx/` and `~/.dev/` directory structures.
+
+### Uninstalling & Data Purge
+
+```bash
+# Remove Python package and CLI binaries:
+pipx uninstall devx-coding-agent    # or: pip uninstall devx-coding-agent
+
+# Optional: Clean up user session databases, cache, and embeddings
+# Linux / macOS:
+rm -rf ~/.devx ~/.cache/devx
+
+# Windows (PowerShell):
+Remove-Item -Recurse -Force "$HOME\.devx", "$HOME\.cache\devx"
 ```
 
 ---

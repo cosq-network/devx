@@ -48,11 +48,12 @@ graph TD
 In your Python 3.11+ environment:
 
 ```bash
-# Clone the repository
+# Option A: Standalone global CLI install via pipx (recommended for users)
+pipx install "devx-coding-agent[all]"
+
+# Option B: Clone & editable development mode (for contributors)
 git clone https://github.com/cosq-network/devx.git
 cd devx
-
-# Install with all runtime extras (CLI, TUI, Agent, SSH, Embeddings):
 pip install -e ".[all]"
 ```
 

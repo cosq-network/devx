@@ -9,9 +9,10 @@ The project exposes the CLI through the following declaration in
 ```toml
 [project.scripts]
 devx = "devx.cli.app:main"
+dev = "devx.cli.app:main"
 ```
 
-Installing the project creates a platform-specific launcher named `devx`.
+Installing the project creates platform-specific launchers named `devx` and `dev`.
 Installing in editable mode means that changes under `src/devx` are used
 immediately without rebuilding or reinstalling the package.
 

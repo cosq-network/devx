@@ -33,13 +33,17 @@
 
 ## 1. `devx` (Default Entrypoint)
 
-Invoking `devx` without arguments in an interactive terminal automatically starts the full-screen Textual TUI.
+Invoking `devx` (or its alias `dev`) without arguments in an interactive terminal automatically starts the full-screen Textual TUI.
 
 ```bash
+# Launch interactive TUI
 devx
+
+# Legacy alias also supported
+dev
 ```
 
-If stdin/stdout are redirected or piped in non-interactive environments, running bare `devx` displays the help banner.
+If stdin/stdout are redirected or piped in non-interactive environments, running bare `devx` or `dev` displays the help banner.
 
 ---
 
