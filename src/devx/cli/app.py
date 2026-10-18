@@ -150,6 +150,7 @@ if typer is not None:
         container: str | None = typer.Option(None, "--container", help="Container workspace URI (container://name/path)"),  # type: ignore[attr-defined]
         approval_cache: bool = typer.Option(False, "--approval-cache", help="Reuse approval decisions within this run"),  # type: ignore[attr-defined]
         approval_matching: bool = typer.Option(False, "--approval-matching", help="Auto-approve actions matching project permission rules"),  # type: ignore[attr-defined]
+        mode: str | None = typer.Option(None, "--mode", "-m", help="Task mode: code, architect, review, ask"),  # type: ignore[attr-defined]
     ):
         """Run a single coding-agent query."""
         from devx.agents.graph import DevState, build_supervisor_graph
@@ -157,6 +158,8 @@ if typer is not None:
         from devx.harness.approval import ApprovalManager, ApprovalRequest, matches_allow_rule
         configure_logging(json_output=json_logs)
         settings = _load_settings()
+        if mode:
+            object.__setattr__(settings, "mode", mode.strip().lower())
         if remote:
             object.__setattr__(settings, "remote_ssh", remote)
         if ssh_key:
@@ -1073,3 +1076,75 @@ if typer is not None:
             raise typer.BadParameter(  # type: ignore[attr-defined]
                 "Use: devx team init <name> | status | invite <member> | list-sessions | metrics"
             )
+
+    @app.command("session")
+    def session_cmd(
+        action: str = typer.Argument("list", help="list, fork, tree, compact, rename, delete, export, or import"),
+        identifier: str | None = typer.Argument(None, help="Session id/name for fork/compact/rename/delete/export"),
+        name: str | None = typer.Option(None, "--name", "-n", help="New session name for fork or rename"),
+        path: str | None = typer.Option(None, "--path", "-p", help="Export destination or import source file path"),
+    ):
+        """Manage conversation sessions, branching trees, and context compaction."""
+        settings = Settings.load()
+        store = SessionStore(settings.session_db)
+        if action == "list":
+            sessions = store.list_sessions()
+            if not sessions:
+                print("No saved sessions")
+                return
+            for s in sessions:
+                parent_info = f" (parent: {s.get('parent_id')[:8]})" if s.get("parent_id") else ""
+                print(f"{s['id'][:8]}  {s['name']:<24} {s['updated_at']}{parent_info}")
+        elif action == "fork":
+            if not identifier:
+                raise typer.BadParameter("Provide a session id to fork: devx session fork <session_id> [--name <new_name>]")
+            new_id = store.fork_session(identifier, new_name=name)
+            print(f"Forked session {identifier} -> {new_id}")
+        elif action == "tree":
+            roots = store.get_session_tree()
+            if not roots:
+                print("No saved sessions")
+                return
+            def _render_tree(node, prefix="", is_last=True):
+                connector = "└── " if is_last else "├── "
+                print(f"{prefix}{connector}{node['name']} [{node['id'][:8]}]")
+                children = node.get("children", [])
+                child_prefix = prefix + ("    " if is_last else "│   ")
+                for i, child in enumerate(children):
+                    _render_tree(child, child_prefix, i == len(children) - 1)
+            for i, r in enumerate(roots):
+                _render_tree(r, "", i == len(roots) - 1)
+        elif action == "compact":
+            if not identifier:
+                raise typer.BadParameter("Provide a session id to compact: devx session compact <session_id>")
+            res = store.compact_session(identifier)
+            if res.get("compacted"):
+                print(f"Compacted session {identifier}: pruned {res['removed_messages']} messages into summary ({res['message_count']} messages remain)")
+            else:
+                print(f"Session {identifier} is already compact ({res['message_count']} messages)")
+        elif action == "rename":
+            if not identifier or not name:
+                raise typer.BadParameter("Provide session id and new name: devx session rename <session_id> --name <new_name>")
+            if store.rename(identifier, name):
+                print(f"Renamed session {identifier} -> {name}")
+            else:
+                raise typer.BadParameter(f"Session not found: {identifier}")
+        elif action == "delete":
+            if not identifier:
+                raise typer.BadParameter("Provide session id to delete: devx session delete <session_id>")
+            if store.delete(identifier):
+                print(f"Deleted session {identifier}")
+            else:
+                raise typer.BadParameter(f"Session not found: {identifier}")
+        elif action == "export":
+            if not identifier or not path:
+                raise typer.BadParameter("Usage: devx session export <session_id> --path <destination.json>")
+            exported = store.export_session(identifier, Path(path))
+            print(f"Exported session to {exported}")
+        elif action == "import":
+            if not path:
+                raise typer.BadParameter("Usage: devx session import --path <source.json> [--name <name>]")
+            imported_id = store.import_session(Path(path), name=name)
+            print(f"Imported session {imported_id}")
+        else:
+            raise typer.BadParameter("Action must be list, fork, tree, compact, rename, delete, export, or import")

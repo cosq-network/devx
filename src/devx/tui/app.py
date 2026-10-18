@@ -464,10 +464,21 @@ class DevTUI(App):
             self.actions.reset_config()
         elif value == "/session":
             self.sessions.list_sessions()
+        elif value in {"/tree", "/session tree"}:
+            self.sessions.show_tree()
+        elif value in {"/compact", "/session compact"}:
+            self.sessions.compact_session()
+        elif value == "/fork" or value.startswith("/fork "):
+            fork_name = value.partition(" ")[2].strip() if value.startswith("/fork ") else ""
+            self.sessions.fork_session(fork_name)
+        elif value == "/mode" or value.startswith("/mode "):
+            mode_name = value.partition(" ")[2].strip() if value.startswith("/mode ") else ""
+            self.actions.set_mode(mode_name)
         elif value.startswith("/session use "):
             self.sessions.switch_session(value.partition(" ")[2].partition(" ")[2])
         elif (value.startswith("/session ") and not value.startswith("/session rename ")
-              and not value.startswith("/session export ") and not value.startswith("/session import ")):
+              and not value.startswith("/session export ") and not value.startswith("/session import ")
+              and not value.startswith("/session tree") and not value.startswith("/session compact")):
             self.sessions.switch_session(value.partition(" ")[2].strip())
         elif value.startswith("/agent"):
             requested = value.partition(" ")[2].strip() or "supervisor"

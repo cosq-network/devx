@@ -139,8 +139,10 @@ def invoke_with_retry(
     base_delay: float = 0.5,
     circuit_breaker: Optional[CircuitBreaker] = None,
     retry_policy: Optional[RetryPolicy] = None,
+    fallback_model: Any = None,
+    fallback_provider: str = "",
 ):
-    """Invoke model with circuit breaker and retry policy."""
+    """Invoke model with circuit breaker and retry policy, falling back to secondary model on failure."""
     # Skip circuit breaker for mock/testing models that don't have invoke
     if not hasattr(model, 'invoke') or not callable(getattr(model, 'invoke', None)):
         # For testing with mocks, try to call invoke if it exists, otherwise return a default
@@ -171,7 +173,21 @@ def invoke_with_retry(
                 delay = rp.get_delay(attempt)
                 time.sleep(delay)
                 continue
-            # For non-retryable errors or last attempt, raise immediately
+            # When primary model attempts are exhausted, try fallback model if configured
+            if fallback_model is not None and hasattr(fallback_model, "invoke"):
+                try:
+                    fb_provider = fallback_provider or "fallback"
+                    cb_fb = get_circuit_breaker(fb_provider)
+                    response = cb_fb.call(lambda: fallback_model.invoke(prompt))
+                    record_response_usage(
+                        response,
+                        model=getattr(fallback_model, "model_name", "") or getattr(fallback_model, "model", "") or "",
+                        provider=fb_provider,
+                    )
+                    return response
+                except Exception as fb_exc:
+                    raise fb_exc from last_error
+            # For non-retryable errors or last attempt without fallback, raise immediately
             raise
     
     raise last_error or RuntimeError("Model invocation failed")
@@ -396,6 +412,24 @@ def create_llm(settings: Settings) -> Any:
     provider = get_provider(settings.provider)
     provider.validate_settings(settings)
     return provider.create_model(settings)
+
+
+def create_fallback_llm(settings: Settings) -> Any | None:
+    """Create fallback LLM if fallback_provider and/or fallback_model are configured."""
+    fb_provider_name = getattr(settings, "fallback_provider", "").strip() or settings.provider
+    fb_model_name = getattr(settings, "fallback_model", "").strip()
+    if not fb_model_name and not getattr(settings, "fallback_provider", "").strip():
+        return None
+    try:
+        fb_settings = settings.model_copy(update={
+            "provider": fb_provider_name,
+            "model": fb_model_name or settings.model,
+        })
+        provider = get_provider(fb_settings.provider)
+        provider.validate_settings(fb_settings)
+        return provider.create_model(fb_settings)
+    except Exception:
+        return None
 
 
 def list_providers() -> list[str]:

@@ -254,6 +254,36 @@ def build_coding_agent(
             return "GH PR CREATE DENIED: request user approval before creating PR."
         return tools.run(cmd, approved=True).output
 
+    active_mode = getattr(settings, "mode", "code").strip().lower()
+    MODE_ALLOWED_BUILTINS: dict[str, set[str] | None] = {
+        "code": None,  # all allowed
+        "architect": {"read_file", "read_files", "search_files"},
+        "review": {"read_file", "read_files", "search_files", "run_command"},
+        "ask": {"read_file", "read_files", "search_files"},
+    }
+    allowed_builtins = MODE_ALLOWED_BUILTINS.get(active_mode)
+
+    MODE_PROMPTS = {
+        "architect": (
+            "You are an expert software architect. Explore the codebase, analyze structure and dependencies, "
+            "design modular architectures, and formulate detailed technical plans. Do not make direct code modifications."
+        ),
+        "review": (
+            "You are a thorough code reviewer. Review changes, inspect git diffs, examine test coverage and edge cases, "
+            "check for security risks, and run verification tests."
+        ),
+        "ask": (
+            "You are an insightful technical assistant. Answer questions, explain code mechanics, and offer "
+            "technical explanations without modifying files."
+        ),
+        "code": (
+            "You are a careful coding agent. Inspect before editing, make minimal changes, "
+            "explain intended mutations, and run focused tests after approved edits. "
+            "Never claim a denied action succeeded."
+        ),
+    }
+    system_prompt = MODE_PROMPTS.get(active_mode, MODE_PROMPTS["code"])
+
     registry = registry or build_tool_registry(settings, approve)
     builtins = {
         "read_file": read_file,
@@ -269,6 +299,8 @@ def build_coding_agent(
         "gh_pr_create": gh_pr_create,
     }
     for name, tool_object in builtins.items():
+        if allowed_builtins is not None and name not in allowed_builtins:
+            continue
         if name not in registry.names():
             # Built-ins perform their own path/command approval checks and
             # consume the tool budget inside their handlers.
@@ -276,6 +308,8 @@ def build_coding_agent(
 
     def before_extension_call(spec: ToolSpec, arguments: dict[str, Any]) -> str | None:
         consume_tool_call()
+        if active_mode in {"architect", "ask"} and spec.permission_action in {"plugin", "write", "shell"}:
+            return f"{spec.name.upper()} DENIED: Tool is disabled in '{active_mode}' mode."
         action = spec.permission_action
         if not action:
             return None
@@ -293,11 +327,7 @@ def build_coding_agent(
     return create_agent(
         model=create_llm(settings),
         tools=registry.langchain_tools(before_extension_call),
-        system_prompt=(
-            "You are a careful coding agent. Inspect before editing, make minimal changes, "
-            "explain intended mutations, and run focused tests after approved edits. "
-            "Never claim a denied action succeeded."
-        ),
+        system_prompt=system_prompt,
     )
 
 

@@ -222,6 +222,23 @@ class ActionHandlers:
             self.app._requested_agent = requested
             self.app.query_one("#status-text", Static).update(f"● agent: {requested}")
 
+    def set_mode(self, requested: str) -> None:
+        from devx.config import Settings
+        requested = requested.strip().lower()
+        valid_modes = {"architect", "code", "review", "ask"}
+        if not requested:
+            current = getattr(self.app, "_mode", "code")
+            self.app._write(f"Current operational mode: {current}. Available: {', '.join(sorted(valid_modes))}")
+            return
+        if requested not in valid_modes:
+            self.app._write(f"Invalid mode: {requested}. Choose one of: {', '.join(sorted(valid_modes))}")
+            return
+        self.app._mode = requested
+        settings = Settings.load()
+        object.__setattr__(settings, "mode", requested)
+        self.app.query_one("#status-text", Static).update(f"● mode: {requested}")
+        self.app._write(f"Switched operational mode to: {requested}")
+
     def run_plan(self, task: str) -> None:
         if not task:
             self.app._write("Usage: /plan <task>")

@@ -26,7 +26,12 @@ class SessionStore:
                 conn.execute("INSERT INTO schema_version VALUES (1)")
             conn.execute("""CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL, state TEXT NOT NULL, metadata TEXT NOT NULL)""")
+                updated_at TEXT NOT NULL, state TEXT NOT NULL, metadata TEXT NOT NULL,
+                parent_id TEXT)""")
+            try:
+                conn.execute("ALTER TABLE sessions ADD COLUMN parent_id TEXT")
+            except sqlite3.OperationalError:
+                pass
             conn.execute("""CREATE TABLE IF NOT EXISTS session_events (
                 id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, run_id TEXT NOT NULL,
                 event TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
@@ -57,18 +62,21 @@ class SessionStore:
         finally:
             conn.close()
 
-    def save(self, session_id: str | None, name: str, state: dict[str, Any], metadata: dict[str, Any] | None = None) -> str:
+    def save(self, session_id: str | None, name: str, state: dict[str, Any], metadata: dict[str, Any] | None = None, parent_id: str | None = None) -> str:
         sid = session_id or str(uuid.uuid4())
         now = datetime.now(UTC).isoformat()
         with self._connect() as conn:
-            old = conn.execute("SELECT created_at FROM sessions WHERE id=?", (sid,)).fetchone()
+            old = conn.execute("SELECT created_at, parent_id FROM sessions WHERE id=?", (sid,)).fetchone()
             created = old[0] if old else now
+            actual_parent = parent_id if parent_id is not None else (old[1] if old else None)
             conn.execute(
-                """INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?)
+                """INSERT INTO sessions(id, name, created_at, updated_at, state, metadata, parent_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET name=excluded.name,
                    updated_at=excluded.updated_at, state=excluded.state,
-                   metadata=excluded.metadata""",
-                (sid, name, created, now, json.dumps(state), json.dumps(metadata or {})),
+                   metadata=excluded.metadata,
+                   parent_id=COALESCE(excluded.parent_id, sessions.parent_id)""",
+                (sid, name, created, now, json.dumps(state), json.dumps(metadata or {}), actual_parent),
             )
         return sid
 
@@ -77,12 +85,76 @@ class SessionStore:
             row = conn.execute("SELECT * FROM sessions WHERE id=? OR name=? LIMIT 1", (session_id, session_id)).fetchone()
         if not row:
             return None
-        return {"id": row["id"], "name": row["name"], "state": json.loads(row["state"]), "metadata": json.loads(row["metadata"]), "updated_at": row["updated_at"]}
+        parent_id = row["parent_id"] if "parent_id" in row.keys() else None
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "state": json.loads(row["state"]),
+            "metadata": json.loads(row["metadata"]),
+            "updated_at": row["updated_at"],
+            "parent_id": parent_id,
+        }
 
     def list_sessions(self) -> list[dict[str, Any]]:
         with self._connect() as conn:
-            rows = conn.execute("SELECT id,name,created_at,updated_at FROM sessions ORDER BY updated_at DESC").fetchall()
+            rows = conn.execute("SELECT id,name,created_at,updated_at,parent_id FROM sessions ORDER BY updated_at DESC").fetchall()
         return [dict(row) for row in rows]
+
+    def fork_session(self, source_session_id: str, new_name: str | None = None) -> str:
+        """Fork an existing session into a new branch, copying its state and events."""
+        source = self.load(source_session_id)
+        if not source:
+            raise KeyError(f"Session not found: {source_session_id}")
+        source_id = source["id"]
+        forked_name = new_name.strip() if new_name and new_name.strip() else f"{source['name']}-fork"
+        metadata = dict(source.get("metadata", {}))
+        metadata["forked_from"] = source_id
+        metadata["forked_at"] = datetime.now(UTC).isoformat()
+
+        new_sid = self.save(None, forked_name, source["state"], metadata=metadata, parent_id=source_id)
+
+        # Copy past events with new session_id linkage so the branch retains conversation history
+        events = self.events(source_id)
+        for item in events:
+            ev = item.get("event")
+            if isinstance(ev, dict):
+                self.append_event(new_sid, str(item.get("run_id", new_sid)), ev)
+        return new_sid
+
+    def get_session_tree(self) -> list[dict[str, Any]]:
+        """Return sessions structured as roots and child branches."""
+        sessions = self.list_sessions()
+        by_id = {s["id"]: {**s, "children": []} for s in sessions}
+        roots: list[dict[str, Any]] = []
+        for s in sessions:
+            pid = s.get("parent_id")
+            if pid and pid in by_id:
+                by_id[pid]["children"].append(by_id[s["id"]])
+            else:
+                roots.append(by_id[s["id"]])
+        return roots
+
+    def compact_session(self, session_id: str, *, max_messages: int = 24,
+                        max_chars: int = 24_000, summary_chars: int = 4_000) -> dict[str, Any]:
+        """Compact message history in a session's state using devx.token_optim.compaction."""
+        from devx.token_optim.compaction import compact_messages
+        session = self.load(session_id)
+        if not session:
+            raise KeyError(f"Session not found: {session_id}")
+        state = session.get("state", {})
+        messages = state.get("messages", [])
+        if not messages:
+            return {"compacted": False, "removed_messages": 0, "session_id": session["id"], "message_count": 0}
+        res = compact_messages(messages, max_messages=max_messages, max_chars=max_chars, summary_chars=summary_chars)
+        if res.compacted:
+            state["messages"] = res.messages
+            self.save(session["id"], session["name"], state, metadata=session.get("metadata"), parent_id=session.get("parent_id"))
+        return {
+            "compacted": res.compacted,
+            "removed_messages": res.removed_messages,
+            "session_id": session["id"],
+            "message_count": len(res.messages),
+        }
 
     def delete(self, session_id: str) -> bool:
         with self._connect() as conn:

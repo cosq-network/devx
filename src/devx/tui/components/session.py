@@ -94,3 +94,56 @@ class SessionManager:
             self.app._write(f"Imported session: {self.app.session_id}")
         except (OSError, TypeError, ValueError, KeyError, sqlite3.Error) as exc:
             self.app._write(f"Import failed: {exc}")
+
+    def fork_session(self, name: str = "") -> None:
+        from devx.config import Settings
+        from devx.harness.session import SessionStore
+        name = name.strip()
+        try:
+            store = SessionStore(Settings.load().session_db)
+            current_id = self.app.session_id
+            forked_id = store.fork_session(current_id, new_name=name or None)
+            self.switch_session(forked_id)
+            self.app._write(f"Forked session '{current_id}' -> '{forked_id}'")
+        except (KeyError, OSError, sqlite3.Error) as exc:
+            self.app._write(f"Fork failed: {exc}")
+
+    def show_tree(self) -> None:
+        from typing import Any
+        from devx.config import Settings
+        from devx.harness.session import SessionStore
+        try:
+            store = SessionStore(Settings.load().session_db)
+            roots = store.get_session_tree()
+            if not roots:
+                self.app._write("No saved sessions.")
+                return
+            lines = ["Session Tree:"]
+            def _render_node(node: dict[str, Any], prefix: str = "", is_last: bool = True) -> None:
+                current_marker = "● (active) " if node["id"] == self.app.session_id else "○ "
+                connector = "└── " if is_last else "├── "
+                lines.append(f"{prefix}{connector}{current_marker}{node['name']} [{node['id'][:8]}]")
+                children = node.get("children", [])
+                child_prefix = prefix + ("    " if is_last else "│   ")
+                for i, child in enumerate(children):
+                    _render_node(child, child_prefix, i == len(children) - 1)
+
+            for i, root in enumerate(roots):
+                _render_node(root, "", i == len(roots) - 1)
+            self.app._write("\n".join(lines))
+        except (OSError, sqlite3.Error) as exc:
+            self.app._write(f"Unable to show session tree: {exc}")
+
+    def compact_session(self) -> None:
+        from devx.config import Settings
+        from devx.harness.session import SessionStore
+        try:
+            store = SessionStore(Settings.load().session_db)
+            result = store.compact_session(self.app.session_id)
+            if result.get("compacted"):
+                self.switch_session(self.app.session_id)
+                self.app._write(f"Context compacted! Pruned {result.get('removed_messages')} older messages into milestone summary.")
+            else:
+                self.app._write(f"Context already compact ({result.get('message_count', 0)} messages). No compaction needed.")
+        except (KeyError, OSError, sqlite3.Error) as exc:
+            self.app._write(f"Compaction failed: {exc}")

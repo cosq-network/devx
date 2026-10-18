@@ -168,6 +168,22 @@ class Settings(BaseModel):
         default=SECRET_SCAN_MODE_DEFAULT,
         description="Secret scanning on agent reads: off, warn, redact, or block",
     )
+    mode: str = Field(
+        default="code",
+        description="Operational task mode: code, architect, review, ask",
+    )
+    fallback_provider: str = Field(
+        default="",
+        description="Fallback provider for automatic failover (e.g. openai, anthropic, google)",
+    )
+    fallback_model: str = Field(
+        default="",
+        description="Fallback model name for automatic failover",
+    )
+    sandbox: str = Field(
+        default="none",
+        description="Local execution sandboxing driver: none, bwrap",
+    )
 
     # ── Pydantic V2 validators ──
 
@@ -206,6 +222,13 @@ class Settings(BaseModel):
         if v < DIAGNOSTIC_DISTILLATION_MIN_CHARS:
             raise ValueError(f"diagnostic_distillation_max_chars must be at least {DIAGNOSTIC_DISTILLATION_MIN_CHARS}")
         return v
+
+    @field_validator("mode")
+    def valid_mode(cls, v: str) -> str:
+        clean = v.strip().lower()
+        if clean not in {"code", "architect", "review", "ask"}:
+            raise ValueError(f"Invalid mode: {v}. Must be one of: code, architect, review, ask")
+        return clean
 
     @field_validator("command_timeout")
     def positive_timeout(cls, v: float) -> float:
@@ -388,6 +411,10 @@ class Settings(BaseModel):
                 "DEV_SECRET_SCAN",
             )
         ).strip().lower()
+        mode = str(get("DEVX_MODE", str(project.get("mode", "code")), "DEV_MODE")).strip().lower()
+        fallback_provider = str(get("DEVX_FALLBACK_PROVIDER", str(project.get("fallback_provider", "")), "DEV_FALLBACK_PROVIDER")).strip()
+        fallback_model = str(get("DEVX_FALLBACK_MODEL", str(project.get("fallback_model", "")), "DEV_FALLBACK_MODEL")).strip()
+        sandbox = str(get("DEVX_SANDBOX", str(project.get("sandbox", "none")), "DEV_SANDBOX")).strip().lower()
 
         # Resolve project config-derived fields
         permission_rules = tuple(item for item in raw_permissions if isinstance(item, dict))
@@ -441,6 +468,10 @@ class Settings(BaseModel):
             ssh_allow_unknown_keys=ssh_allow_unknown_keys,
             container=container,
             secret_scan_mode=secret_scan_mode,
+            mode=mode,
+            fallback_provider=fallback_provider,
+            fallback_model=fallback_model,
+            sandbox=sandbox,
         )
 
     # ── Validation ────────────────────────────────────────────────────

@@ -52,11 +52,12 @@ class WorkspaceTools:
 
     def __init__(self, policy: PermissionPolicy, *, max_bytes: int = 1_000_000, timeout: float = 120,
                  journal: ChangeJournal | None = None, run_id: str = "adhoc", cancellation: CancellationToken | None = None,
-                 backend: WorkspaceBackend | None = None, secret_scan_mode: str = SECRET_SCAN_MODE_DEFAULT):
+                 backend: WorkspaceBackend | None = None, secret_scan_mode: str = SECRET_SCAN_MODE_DEFAULT,
+                 sandbox: str = "none"):
         self.policy, self.max_bytes, self.timeout = policy, max_bytes, timeout
         self.journal, self.run_id = journal, run_id
         self.cancellation = cancellation or CancellationToken()
-        self.backend = backend or LocalWorkspaceBackend(policy.workspace)
+        self.backend = backend or LocalWorkspaceBackend(policy.workspace, sandbox=sandbox)
         self.secret_scan_mode = secret_scan_mode
 
     def _secret_summary(self, path: str, hits: list) -> str:

@@ -191,3 +191,20 @@ class TestRunCommand:
 
     def test_close_is_noop(self, backend):
         backend.close()
+
+    def test_sandbox_mode_initialization(self, tmp_path):
+        backend_none = LocalWorkspaceBackend(tmp_path, sandbox="none")
+        assert backend_none.sandbox == "none"
+
+        backend_bwrap = LocalWorkspaceBackend(tmp_path, sandbox="bwrap")
+        assert backend_bwrap.sandbox == "bwrap"
+
+        # On systems without bwrap or on Windows, fallback executes safely
+        res = backend_bwrap.run_command(
+            ["python", "-c", "print('sandbox-check')"],
+            timeout=10,
+            cancellation=CancellationToken(),
+            max_bytes=1000,
+        )
+        assert res.ok is True
+        assert "sandbox-check" in res.output

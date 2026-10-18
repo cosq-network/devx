@@ -31,9 +31,20 @@ HELP_TOPICS = {
         "SESSION\n"
         "/session                List saved sessions.\n"
         "/session use <id>       Switch and restore a saved session.\n"
+        "/fork [name]            Fork current session into a new branch.\n"
+        "/tree                   Visualize session hierarchy and active branch.\n"
+        "/compact                Compact session context to bound tokens.\n"
         "/session rename <name>  Rename the current session.\n"
         "/session export <path>  Export the current session.\n"
         "/session import <path>  Import a session."
+    ),
+    "mode": (
+        "MODE\n"
+        "/mode                   Show active operational mode.\n"
+        "/mode architect         Read-only exploration and planning mode.\n"
+        "/mode code              Full implementation and test execution mode.\n"
+        "/mode review            Diff review, testing, and security audit mode.\n"
+        "/mode ask               Conversational Q&A mode without tool execution."
     ),
     "shortcuts": (
         "SHORTCUTS\n"
@@ -52,11 +63,15 @@ QUICK_START_HELP = (
     "First run: /setup    Change settings later: /setup\n"
     "\n"
     "COMMANDS\n"
-    "/help [topic]         Show help or: setup, provider, model, session, shortcuts.\n"
+    "/help [topic]         Show help or: setup, provider, model, session, mode, shortcuts.\n"
     "/setup                 Configure provider and coding model.\n"
     "/provider              List or select a provider.\n"
     "/model                 Select a curated coding model.\n"
     "/session               List or switch saved sessions.\n"
+    "/fork [name]           Fork session into a new branch.\n"
+    "/tree                  Show session branch hierarchy.\n"
+    "/compact               Compact transcript to save tokens.\n"
+    "/mode [name]           Set mode: architect, code, review, ask.\n"
     "/agent [name]          Choose supervisor, planner, coder, or tester.\n"
     "/config show           Show active settings with the API key masked.\n"
     "/config reset          Reset configuration to defaults.\n"
@@ -65,7 +80,7 @@ QUICK_START_HELP = (
     "/cancel                 Cancel a running task.\n"
     "/exit                  Quit the TUI.\n"
     "\n"
-    "Try /help model or /help shortcuts for details."
+    "Try /help session, /help mode, or /help shortcuts for details."
 )
 
 

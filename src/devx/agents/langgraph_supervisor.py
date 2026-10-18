@@ -197,7 +197,8 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
                            max_bytes=settings.max_file_bytes, timeout=settings.command_timeout,
                            journal=journal, run_id=run_id, cancellation=cancellation,
                            backend=backend,
-                           secret_scan_mode=getattr(settings, "secret_scan_mode", "warn"))
+                           secret_scan_mode=getattr(settings, "secret_scan_mode", "warn"),
+                           sandbox=getattr(settings, "sandbox", "none"))
 
     def approve(action: str, target: str, reason: str = "") -> bool:
         return approvals.allows(run_id, action, target, reason)
@@ -265,8 +266,16 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
                 except Exception:
                     pass
             context = "\n\n".join(context_blocks)
-        else:
             context = read_context(selected, settings.max_file_bytes)
+
+        from devx.rules import discover_project_rules, format_rules_for_prompt
+        project_rules = discover_project_rules(settings.workspace)
+        rules_text = format_rules_for_prompt(project_rules)
+        if rules_text:
+            context = f"{rules_text}\n\n{context}"
+            if event_sink:
+                event_sink({"type": "rules_discovered", "rules": [r["name"] for r in project_rules]})
+
         fingerprint = ""
         if semantic_cache:
             from devx.token_optim.cache import fingerprint_files
@@ -316,11 +325,17 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
                 else context
             )
             try:
-                response = invoke_with_retry(create_llm(settings), "Create a concrete coding plan. Do not edit files. "
-                                          f"Give special attention to the requested specialist perspective: {specialist}.\n\nTask:\n"
-                                          + task + "\n\nContext:\n" + planner_context,
-                                          provider=settings.provider,
-                                          )
+                from devx.llm import create_fallback_llm
+                fb_llm = create_fallback_llm(settings)
+                response = invoke_with_retry(
+                    create_llm(settings),
+                    "Create a concrete coding plan. Do not edit files. "
+                    f"Give special attention to the requested specialist perspective: {specialist}.\n\nTask:\n"
+                    + task + "\n\nContext:\n" + planner_context,
+                    provider=settings.provider,
+                    fallback_model=fb_llm,
+                    fallback_provider=getattr(settings, "fallback_provider", ""),
+                )
             except Exception as exc:
                 error_msg = str(exc)
                 if _is_rate_limit_error(exc):
@@ -339,8 +354,9 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
         return state
 
     def route_after_planner(state: GraphState) -> str:
-        if plan_only:
-            state["status"] = "plan_only"
+        active_mode = getattr(settings, "mode", "code").strip().lower()
+        if plan_only or active_mode in {"architect", "ask"}:
+            state["status"] = "plan_only" if plan_only else "completed"
             state["result"] = state.get("plan", "")
             return "finish"
         if state.get("iteration", 0) >= settings.max_iterations:

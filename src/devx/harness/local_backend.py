@@ -23,8 +23,9 @@ IGNORE_DIRS = {
 class LocalWorkspaceBackend(WorkspaceBackend):
     """Local filesystem and process execution backend."""
 
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, sandbox: str = "none"):
         self.workspace = workspace.resolve()
+        self.sandbox = sandbox.strip().lower()
 
     @property
     def root(self) -> str:
@@ -140,6 +141,26 @@ class LocalWorkspaceBackend(WorkspaceBackend):
         max_bytes: int,
     ) -> BackendToolResult:
         args = command if isinstance(command, list) else [command]
+        if self.sandbox == "bwrap" and os.name != "nt":
+            import shutil
+            bwrap_path = shutil.which("bwrap")
+            if bwrap_path:
+                bwrap_cmd = [
+                    bwrap_path,
+                    "--ro-bind", "/usr", "/usr",
+                    "--ro-bind", "/bin", "/bin",
+                    "--proc", "/proc",
+                    "--dev", "/dev",
+                    "--tmpfs", "/tmp",
+                    "--bind", str(self.workspace), str(self.workspace),
+                    "--chdir", str(self.workspace),
+                ]
+                for p in ["/lib", "/lib64", "/etc"]:
+                    if os.path.exists(p):
+                        bwrap_cmd.extend(["--ro-bind", p, p])
+                bwrap_cmd.append("--")
+                bwrap_cmd.extend(args)
+                args = bwrap_cmd
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         try:
             process = subprocess.Popen(
