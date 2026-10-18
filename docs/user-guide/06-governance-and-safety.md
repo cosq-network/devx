@@ -155,6 +155,38 @@ devx ask --approve-all "run pytest and format code"
 
 ---
 
+## 6. Repository Rules & Skills Discovery (`.devx/rules/`)
+
+To steer agent behavior without hardcoding instructions into every prompt, `devx` automatically discovers and applies repository-level rules and custom skills:
+
+### Rules (`.devx/rules/*.md`)
+Create markdown files under `.devx/rules/` to enforce project-specific coding standards, architectural guardrails, and security policies:
+- `.devx/rules/coding-style.md`: Type annotation requirements, docstring standards.
+- `.devx/rules/security.md`: Authentication requirements, sanitization rules.
+
+`devx` automatically indexes these files, bounds their total size, and injects them directly into the agent prompt context.
+
+### Custom Skills (`.devx/skills/`)
+Custom multi-step prompt workflows can be organized into `.devx/skills/<skill-name>/SKILL.md` (or `.devx/skills/<skill-name>.md`). When discovered, skills are tagged and made available for agent planning and execution.
+
+---
+
+## 7. Local Execution Sandboxing (`bwrap`)
+
+On Linux hosts, `devx` supports kernel-level isolation for shell command execution via **Bubblewrap** (`bwrap`):
+
+```env
+DEVX_SANDBOX=bwrap   # none | bwrap
+```
+
+When enabled:
+- System directories (`/usr`, `/bin`, `/lib`, `/etc`) are mounted strictly read-only.
+- Essential pseudo-filesystems (`/proc`, `/dev`, and a tmpfs `/tmp`) are isolated.
+- Write access is strictly confined to the active workspace directory.
+- If running on Windows or macOS (or if `bwrap` is not installed), `devx` gracefully falls back to standard execution with clear diagnostic logging.
+
+---
+
 ## Next Steps
 
 - Learn how `devx` minimizes token usage in [Token Optimization](07-token-optimization.md).

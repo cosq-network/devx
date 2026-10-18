@@ -125,6 +125,22 @@ devx/
 │   ├── cli/                    # Typer commands
 │   │   └── app.py              # Typer app and subcommands
 │   │
+│   ├── analysis/               # Deterministic static analysis & diffs
+│   │   ├── ast_scanner.py      # AST codebase topology and dependency graphs
+│   │   └── diff_analyzer.py    # Semantic unified diff parser and chunker
+│   │
+│   ├── review/                 # Multi-perspective code review
+│   │   └── reviewer.py         # 4-critic review engine with linter pre-checks
+│   │
+│   ├── design/                 # Architecture & system design
+│   │   └── architect.py        # Mermaid diagramming, ADRs, symbol tracing
+│   │
+│   ├── test_engine/            # Intelligent testing engine
+│   │   ├── smart_runner.py     # Test-Impact Analysis (TIA) and flakiness prober
+│   │   └── generator.py        # AST-guided unit test generator
+│   │
+│   ├── rules.py                # Repository rules (.devx/rules) & skills discovery
+│   │
 │   ├── token_optim/            # Token optimization
 │   │   ├── __init__.py
 │   │   ├── embeddings.py       # Local embedding wrapper
@@ -138,7 +154,7 @@ devx/
 │       └── parser.py           # @ mention parser
 │
 └── tests/
-    └── test_benchmark.py       # Offline developer-experience benchmarks
+    └── ...                     # Comprehensive test suites (95+ tests)
 ```
 
 ---

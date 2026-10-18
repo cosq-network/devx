@@ -23,19 +23,21 @@ graph TD
     PORTAL --> CH7["07. Token Optimization"]
     PORTAL --> CH8["08. Extensibility & MCP"]
     PORTAL --> CH9["09. Observability & Operations"]
+    PORTAL --> CH10["10. Client Intelligence"]
 ```
 
 | Chapter | Overview |
 |---|---|
 | [**1. Getting Started**](user-guide/01-getting-started.md) | Prerequisites, packaging extras, global PATH setup, interactive init wizard, diagnostics, and first task |
-| [**2. Core Concepts**](user-guide/02-core-concepts.md) | Supervisor state machine (Planner, Coder, Parallel Coder, Tester, Repair Loop), approval gates, sessions, and knowledge graph |
-| [**3. CLI Reference**](user-guide/03-cli-reference.md) | Exhaustive documentation of all 17 CLI commands and command-line flags |
-| [**4. TUI Workflow Guide**](user-guide/04-tui-guide.md) | Full layout breakdown, modal dialogues, all slash commands, shortcuts, and layered clipboard mechanisms |
-| [**5. Workspace Backends**](user-guide/05-workspace-backends.md) | Governed execution across Local, SSH (`--remote`), Docker Containers (`--container`), and throwaway Lab (`devx lab`) |
-| [**6. Governance, Safety & Secret Hygiene**](user-guide/06-governance-and-safety.md) | Automated secret scanning/redaction, policy presets (`strict`, `protected`), granular permissions, and change journal rollbacks |
+| [**2. Core Concepts**](user-guide/02-core-concepts.md) | Supervisor state machine (Planner, Coder, Parallel Coder, Tester, Repair Loop), approval gates, operational modes, session branching, and knowledge graph |
+| [**3. CLI Reference**](user-guide/03-cli-reference.md) | Exhaustive documentation of all CLI commands, review, design, test intelligence, and session management |
+| [**4. TUI Workflow Guide**](user-guide/04-tui-guide.md) | Full layout breakdown, modal dialogues, operational modes, session trees, slash commands, shortcuts, and clipboard |
+| [**5. Workspace Backends**](user-guide/05-workspace-backends.md) | Governed execution across Local (with Bubblewrap sandbox), SSH (`--remote`), Containers (`--container`), and Lab (`devx lab`) |
+| [**6. Governance, Safety & Secret Hygiene**](user-guide/06-governance-and-safety.md) | Automated secret scanning/redaction, policy presets, repository rules (`.devx/rules`), permissions, and rollbacks |
 | [**7. Token Optimization & Caching**](user-guide/07-token-optimization.md) | Local ONNX INT8 embeddings, semantic caching, conversation compaction, decoupled context, and diagnostic distillation |
-| [**8. Extensibility, Plugins & MCP**](user-guide/08-extensibility-and-mcp.md) | Writing Python workspace plugins (`.devx/plugins/`), stdio MCP servers, custom tool registration, and safety boundaries |
-| [**9. Observability, Operations & Team**](user-guide/09-observability-and-ops.md) | Prometheus metrics exposition, LangSmith tracing, DLQ triage & replay, circuit breakers, cost receipts, and team manifests |
+| [**8. Extensibility, Plugins & MCP**](user-guide/08-extensibility-and-mcp.md) | Writing Python workspace plugins, stdio MCP servers, custom skills (`.devx/skills`), and safety boundaries |
+| [**9. Observability, Operations & Team**](user-guide/09-observability-and-ops.md) | Prometheus metrics exposition, LangSmith tracing, DLQ triage & replay, circuit breakers, fallback cascading, and team manifests |
+| [**10. Client-Side Intelligence**](user-guide/10-client-intelligence.md) | Multi-perspective code review, codebase topology extraction, Mermaid diagram synthesis, ADR authoring, Test-Impact Analysis (TIA), and flakiness probing |
 
 ---
 
@@ -123,6 +125,23 @@ devx verify
 # Pre-commit secret sweep
 devx scan-secrets src/
 
+# Automated multi-perspective code review
+devx review --staged
+devx review --branch main
+
+# System design diagrams and Architectural Decision Records
+devx design --diagram flowchart
+devx design --adr "Adopt Event Bus"
+
+# Intelligent testing: impact analysis and flakiness probing
+devx test impact
+devx test flaky tests/test_calc.py --runs 5
+
+# Session tree branching and context compaction
+devx session tree
+devx session fork 4f2a1c --name new-feature
+devx session compact 4f2a1c
+
 # PR summary and token cost receipt
 devx report my-session --out pr-body.md
 devx usage --run 4f2a1c --markdown
@@ -133,11 +152,19 @@ devx usage --run 4f2a1c --markdown
 | Key / Command | Action |
 |---|---|
 | `/setup` | Configure provider, coding model, and API key |
+| `/mode [name]` | Switch operational mode: `architect`, `code`, `review`, `ask` |
 | `/diff` | Display the current bounded Git diff |
 | `/undo` | Roll back all approved changes from the previous run |
+| `/review` | Run automated multi-perspective review on current diff |
+| `/design [kind]` | Synthesize Mermaid architecture diagram (`flowchart`, `class`, `seq`) |
+| `/adr <title>` | Create and persist an Architectural Decision Record |
+| `/test [impact\|flaky]` | Run selective impacted tests or probe test flakiness |
 | `/plan <task>` | Create an implementation plan without modifying files |
-| `/cancel` | Cancel an active agent run immediately |
+| `/fork [name]` | Fork current conversation into a new branch |
+| `/tree` | Visualize the session branch hierarchy |
+| `/compact` | Compact session context to bound token usage |
 | `/session` | List or switch active sessions |
+| `/cancel` | Cancel an active agent run immediately |
 | `/remote connect <uri>` | Switch to a remote SSH workspace |
 | **Ctrl+C** *(single)* | Cancel active run / copy transcript when idle |
 | **Ctrl+C** *(twice)* | Quit the TUI |

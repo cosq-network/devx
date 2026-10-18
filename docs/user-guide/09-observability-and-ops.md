@@ -97,6 +97,17 @@ To protect your budget against cascading failures or infinite retry loops during
 2. **OPEN**: If consecutive API failures exceed the failure threshold (default: 5), the circuit trips to `OPEN`. All subsequent calls immediately fail fast with `ModelRateLimitError`, preventing runaway retry storms.
 3. **HALF_OPEN**: After a recovery timeout (default: 30 seconds), the circuit enters `HALF_OPEN` and permits a single test call. If successful, it returns to `CLOSED`; if it fails, it trips back to `OPEN`.
 
+### Model Fallback Cascading
+
+When high-throughput coding tasks hit upstream rate limits (HTTP 429) or transient server errors (HTTP 5xx), `devx` automatically fails over to an optional secondary model without failing the task:
+
+```env
+DEVX_FALLBACK_PROVIDER=openrouter
+DEVX_FALLBACK_MODEL=openrouter/free
+```
+
+During execution, `invoke_with_retry()` exhausts exponential backoff retries on the primary model, and upon reaching the limit, automatically delegates the pending invocation to the configured fallback model.
+
 ---
 
 ## 4. Cost Accounting & Pricing Table

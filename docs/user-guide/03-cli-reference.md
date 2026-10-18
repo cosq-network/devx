@@ -25,6 +25,9 @@
 | [`devx metrics`](#15-devx-metrics) | Export Prometheus or JSON observability metrics |
 | [`devx lab`](#16-devx-lab) | Spin up disposable remote workspace containers |
 | [`devx team`](#17-devx-team) | Coordinate multi-agent team manifests and shared workspaces |
+| [`devx review`](#18-devx-review) | Automated multi-perspective code review with local static analysis |
+| [`devx design`](#19-devx-design) | Codebase topology, Mermaid diagrams, ADRs, and symbol research |
+| [`devx test`](#20-devx-test) | Test-Impact Analysis (TIA), flakiness probing, and integration tests |
 
 ---
 
@@ -53,6 +56,7 @@ devx ask [OPTIONS] PROMPT
 
 ### Options
 - `--session <id|name>`: Continue an existing session or assign a custom session identifier.
+- `-m, --mode <mode>`: Set operational mode: `code` (default), `architect`, `review`, `ask`.
 - `--plan-only`: Run the Planner agent, display the implementation plan, and exit without modifying files or running commands.
 - `--plan-first` / `--no-plan-first`: Prompt for plan confirmation before executing code changes. (Default: enabled for interactive terminals).
 - `--approve-all`: Automatically approve all file writes and shell commands. **Use only in isolated/trusted containers.**
@@ -130,14 +134,29 @@ Manage sessions, event logs, and the Dead Letter Queue (DLQ).
 devx session list
 devx sessions
 
+# Fork current or target session into a new branch
+devx session fork <SESSION_ID> [--name <BRANCH_NAME>]
+
+# Visualize the conversation tree hierarchy
+devx session tree
+
+# Compact historical messages into a milestone summary to bound tokens
+devx session compact <SESSION_ID>
+
+# Rename an existing session
+devx session rename <SESSION_ID> --name <NEW_NAME>
+
+# Delete a session and its associated events
+devx session delete <SESSION_ID>
+
 # View structured timeline of events for a session
 devx session events <SESSION_ID>
 
 # Export session data to JSON file
-devx session export <SESSION_ID> <BACKUP_FILE>
+devx session export <SESSION_ID> --path <BACKUP_FILE>
 
 # Import session data from JSON file
-devx session import <BACKUP_FILE>
+devx session import --path <BACKUP_FILE> [--name <NAME>]
 
 # Inspect failed runs in Dead Letter Queue
 devx session dlq
@@ -371,6 +390,98 @@ devx team add-member "alice@company.internal"
 
 # Export team manifest
 devx team export
+```
+
+---
+
+## 18. `devx review`
+
+Execute an automated multi-perspective code review with local static analysis pre-checks.
+
+```bash
+devx review [OPTIONS]
+```
+
+### Options
+- `-s, --staged`: Review staged git changes only.
+- `-b, --branch <name>`: Review changes between current branch and target branch (e.g. `main` or `origin/main`).
+- `-c, --commit <hash>`: Review changes introduced in a specific git commit.
+- `--save / --no-save`: Automatically persist review report to `.devx/reviews/` (Default: enabled).
+- `--json`: Output report as machine-readable JSON.
+
+### Examples
+```bash
+# Review current working tree diff
+devx review
+
+# Review staged changes
+devx review --staged
+
+# Review PR branch against main and emit JSON
+devx review --branch main --json
+```
+
+---
+
+## 19. `devx design`
+
+Inspect repository topology, synthesize Mermaid architecture diagrams, create Architectural Decision Records (ADRs), or trace symbol call graphs.
+
+```bash
+devx design [OPTIONS]
+```
+
+### Options
+- `-d, --diagram <kind>`: Synthesize Mermaid diagram: `flowchart` (default), `class`, or `sequence`.
+- `-f, --focus <name>`: Focus diagram or analysis on a specific module or package name.
+- `--adr <title>`: Create a new Architectural Decision Record in `.devx/design/ADR-XXXX-<title>.md`.
+- `-e, --explore <symbol>`: Perform deep multi-hop research tracing definition, parameters, and all callers.
+
+### Examples
+```bash
+# Generate architecture flowchart in Mermaid format
+devx design --diagram flowchart
+
+# Generate class hierarchy for specific module
+devx design --diagram class --focus models
+
+# Author a new ADR
+devx design --adr "Adopt SQLite WAL Mode"
+
+# Explore symbol references across files
+devx design --explore "verify_token"
+```
+
+---
+
+## 20. `devx test`
+
+Run intelligent test selection, test flakiness and determinism probes, or integration tests.
+
+```bash
+devx test [ACTION] [TARGET] [OPTIONS]
+```
+
+### Arguments
+- `ACTION`: Test action to run: `impact` (default), `flaky`, `unit`, `integration`.
+- `TARGET`: Target test path, function name, or modified source file.
+
+### Options
+- `-r, --runs <n>`: Number of test execution passes for flaky check (Default: 3).
+
+### Examples
+```bash
+# Find and run tests impacted by uncommitted git changes (TIA)
+devx test impact
+
+# Run tests impacted by a specific source file
+devx test impact src/devx/rules.py
+
+# Probe a test for flakiness across 5 runs with randomized seeds
+devx test flaky tests/test_calc.py --runs 5
+
+# Run integration tests
+devx test integration
 ```
 
 ---

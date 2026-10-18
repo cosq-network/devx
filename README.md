@@ -35,7 +35,15 @@ For the positioning statement, target users, and the core/team feature split, se
 
 | Feature | Description |
 |---|---|
-| **LangGraph supervisor** | Explicit planner → coder → tester state machine with conditional branching, loops, and interrupt/resume |
+| **LangGraph supervisor** | Explicit planner → coder → tester state machine with conditional branching, two-stage testing, and repair loops |
+| **Operational modes** | Specialized task personas (`architect`, `code`, `review`, `ask`) with dynamic tool gating (`--mode`, `/mode`) |
+| **Session branching & tree** | Branch conversations with `/fork`, visualize hierarchy with `/tree`, and prune tokens with `/compact` |
+| **Client-side code review** | Automated 4-critic review (Security, Performance, Correctness, Maintainability) with local linter diagnostics (`devx review`, `/review`) |
+| **System design & Mermaid** | AST-based codebase topology scanner, Mermaid diagram generation, ADR authoring, and symbol research (`devx design`, `/design`) |
+| **Intelligent testing** | Test-Impact Analysis (TIA), test flakiness and determinism prober, and unit test synthesizer (`devx test`, `/test`) |
+| **Project rules & skills** | Auto-discovers `.devx/rules/*.md` and `.devx/skills/` and injects repository instructions into agent context |
+| **Model fallback cascading** | Seamless failover to secondary model upon hitting rate limits (HTTP 429/5xx) |
+| **Execution sandboxing** | Bubblewrap (`bwrap`) read-only system mounts and workspace write confinement on Linux |
 | **Parallel execution** | Automatic parallel coder for multi-file tasks (batch reads) and concurrent lint/test execution |
 | **Remote SSH workspace** | Work transparently on remote servers via SSH/SFTP with jump-host bastion support, auto venv activation, and TCP keepalives |
 | **Containers too** | Run against a `container://` / `docker://` target; file edits and commands execute inside the container with no bind mount required |
@@ -375,6 +383,7 @@ devx ask --plan-only "design the authentication refactor"  # plan without edits
 | Option | Description |
 |---|---|
 | `--session NAME` | Resume or create a named session |
+| `-m, --mode MODE` | Operational persona: `code` (default), `architect`, `review`, `ask` |
 | `-r, --remote URI` | Remote workspace SSH target (e.g. `user@host:/path` or `ssh://...`) |
 | `--ssh-key PATH` | Path to private SSH key for remote authentication |
 | `--container URI` | Container workspace target (`container://name/path` or `docker://name/path`) |
@@ -580,6 +589,39 @@ devx team status            # Team info + usage counters
 devx team list-sessions     # List sessions in the shared database
 ```
 
+### `devx review`
+
+Run an automated multi-perspective code review with local static analysis pre-checks (Security, Performance, Correctness, Maintainability critics).
+
+```bash
+devx review                     # Review working tree
+devx review --staged            # Review staged changes
+devx review --branch main       # Review branch changes against main
+devx review --json              # Output as JSON
+```
+
+### `devx design`
+
+Inspect repository topology, synthesize Mermaid architecture diagrams, create ADRs, or trace symbol call graphs.
+
+```bash
+devx design --diagram flowchart    # Architecture component diagram
+devx design --diagram class        # Class hierarchy diagram
+devx design --adr "Adopt Redis"    # Create an Architectural Decision Record
+devx design --explore "login"      # Multi-hop symbol research trace
+```
+
+### `devx test`
+
+Run intelligent test selection, flakiness probes, or integration tests.
+
+```bash
+devx test impact                # Run tests impacted by recent git changes (TIA)
+devx test impact src/app.py     # Run tests impacted by specific file
+devx test flaky tests/test_app.py --runs 5  # Probe test determinism
+devx test integration           # Run integration test suite
+```
+
 ---
 
 ## TUI Usage
@@ -603,19 +645,25 @@ Launch the TUI with `devx tui`.
 
 | Command | Description |
 |---|---|
+| `/mode [name]` | Switch operational mode: `architect`, `code`, `review`, `ask` |
+| `/review [focus]` | Run automated multi-perspective code review on current diff |
+| `/design [kind]` | Synthesize Mermaid architecture diagram (`flowchart`, `class`, `sequence`) |
+| `/adr <title>` | Create and persist an Architectural Decision Record |
+| `/test [impact\|flaky]` | Run selective impacted tests (TIA) or probe test flakiness |
 | `/diff` | Show the current bounded Git diff without changing files |
 | `/undo` (or `/rollback`) | Undo the last run's approved file changes when files are unchanged afterward |
 | `/plan <task>` | Create a plan without editing or running project commands |
+| `/fork [name]` | Fork current conversation into a new independent branch |
+| `/tree` | Render an ASCII visual tree of the session branch hierarchy |
+| `/compact` | Compact session context into a milestone summary to bound tokens |
+| `/session ...` | List, switch, rename, export, or import sessions |
 | `/cancel` | Request cancellation of the active run |
 | `/copy` | Copy the selected or full transcript |
 | `/setup`, `/provider`, `/model` | Configure provider and model settings |
-| `/session ...` | List, switch, rename, export, or import sessions |
 | `/remote connect <uri>` | Connect the workspace to a remote host via SSH/SFTP |
 | `/remote disconnect` | Disconnect remote SSH workspace and revert to local directory |
 | `/clear` | Clear the current conversation |
 | `/help` | Show help for available commands |
-
-> **Note:** The command set is minimal by design. Additional commands may be added in future releases.
 
 ---
 

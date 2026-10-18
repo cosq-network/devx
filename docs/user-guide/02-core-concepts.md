@@ -16,20 +16,33 @@ At runtime, `devx` executes a graph-based state machine powered by LangGraph. Ra
 ```mermaid
 graph TD
     START([START]) --> PLANNER[Planner Agent]
-    PLANNER -->|plan_only = true| FINISH([FINISH])
+    PLANNER -->|plan_only or mode in architect, ask| FINISH([FINISH])
     PLANNER -->|Plan Approved| ROUTER{Scope Router}
     
     ROUTER -->|Single File| CODER[Coder Agent]
     ROUTER -->|Multi-file / Batch| PCODER[Parallel Coder Agent]
     
-    CODER --> TESTER[Tester Agent]
+    CODER --> TESTER[Tester Agent\nStage 1: Unit / TIA]
     PCODER --> TESTER
     
-    TESTER -->|Tests Pass / No Tests| FINISH
-    TESTER -->|Tests Fail| REPAIR{Repair Count < 2?}
+    TESTER -->|Unit Tests Fail| REPAIR{Repair Count < 2?}
     REPAIR -->|Yes| CODER
     REPAIR -->|Exceeded| FINISH
+    
+    TESTER -->|Unit Tests Pass| INTEG{Integration Tests Configured?}
+    INTEG -->|Yes| ITEST[Stage 2: Integration Tests]
+    INTEG -->|No| FINISH
+    ITEST -->|Integration Pass| FINISH
+    ITEST -->|Integration Fail| REPAIR
 ```
+
+### Specialized Agent Roles & Operational Modes
+
+`devx` supports four operational personas configured via `/mode <name>` or `--mode <name>`:
+- **`code` (Default)**: Full implementation mode with file mutation, command execution, and test verification.
+- **`architect`**: System exploration, dependency topology scanning, and architectural planning without modifying any files.
+- **`review`**: Code review mode allowed to inspect git diffs, examine test coverage, and execute verification commands without modifying source files.
+- **`ask`**: Conversational technical Q&A without tool mutations.
 
 ### Specialized Agent Roles
 
@@ -91,15 +104,29 @@ Every run in `devx` belongs to a session tracked inside `~/.devx/sessions.db`. S
 - Change journal records with pre/post SHA-256 hashes for every modified file.
 - Exact token counts and cost estimates per model call.
 
-### Resuming and Branching Sessions
+### Resuming, Forking, and Tree Branching
 
-You can resume any session at any time:
+`devx` treats sessions as a directed conversation tree rather than a flat linear list:
 
 ```bash
 # In the CLI: Continue a named session
 devx ask --session refactor-auth "now add rate limiting to the token endpoint"
 
-# In the TUI: Switch and restore session context
+# Fork the current session into a new experimental branch:
+devx session fork refactor-auth --name auth-oauth-experiment
+
+# Visualize the full session branch tree hierarchy:
+devx session tree
+
+# Compact historical messages into a milestone summary to bound context:
+devx session compact refactor-auth
+```
+
+In the TUI:
+```text
+/fork oauth-flow
+/tree
+/compact
 /session use refactor-auth
 ```
 

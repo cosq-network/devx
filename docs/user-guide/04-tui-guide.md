@@ -91,6 +91,28 @@ Slash commands provide instant control over configuration, sessions, models, and
 | `/model live tools` | Filter live models to those that explicitly report tool-calling support |
 | `/model use <id>` | Select any model by identifier (e.g. `/model use claude-3-7-sonnet`) |
 
+### Operational Modes
+
+| Command | Description |
+|---|---|
+| `/mode` | Display active operational mode and description |
+| `/mode code` | Full coding mode with file mutations, execution, and testing |
+| `/mode architect` | System exploration and architectural planning mode (no write mutations) |
+| `/mode review` | Code review and test verification mode without file writes |
+| `/mode ask` | Conversational Q&A mode without mutating files |
+
+### Client Intelligence & Testing
+
+| Command | Description |
+|---|---|
+| `/review` | Run automated multi-perspective code review on current working tree diff |
+| `/review <lens>` | Focus review on specific critic lens (`security`, `performance`, `correctness`) |
+| `/design` | Synthesize Mermaid architecture flowchart of repository topology |
+| `/design <kind>` | Generate specific diagram: `flowchart`, `class`, or `sequence` |
+| `/adr <title>` | Author and persist an Architectural Decision Record in `.devx/design/` |
+| `/test` | Run tests impacted by recent git changes (Test-Impact Analysis) |
+| `/test flaky <path>` | Run test determinism probe (3 isolated runs with varied hash seeds) |
+
 ### Workflows & Execution Control
 
 | Command | Description |
@@ -103,12 +125,15 @@ Slash commands provide instant control over configuration, sessions, models, and
 | `/clear` | Clear the transcript screen (equivalent to `Ctrl+L`) |
 | `/exit` | Gracefully disconnect remote backends and close the TUI |
 
-### Session Management
+### Session Management & Branching
 
 | Command | Description |
 |---|---|
 | `/session` | List all saved sessions with creation dates and message counts |
 | `/session use <id>` | Switch to and restore an existing session |
+| `/fork [name]` | Fork the active conversation into a new experimental branch |
+| `/tree` | Render an ASCII visual tree of the session branch hierarchy |
+| `/compact` | Compact historical messages into a milestone summary to bound tokens |
 | `/session rename <name>` | Assign a human-readable name to the current session |
 | `/session export <path>` | Export current session data to a JSON file |
 | `/session import <path>` | Import a session backup into the local session database |
