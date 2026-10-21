@@ -20,13 +20,13 @@ Protected assets, in rough order of severity:
 ## Trust boundaries
 
 ```
- ┌──────────────┐   provider API    ┌──────────────┐
+ ┌──────────────�?   provider API    ┌──────────────�?
  │  Model        │◄─────────────────►│  devx        │
  │  (untrusted   │   prompts, tool   │  (trusted    │
  │   output)     │   calls           │   code)      │
  └──────────────┘                   └──────┬───────┘
                                            │ SSH / docker exec
-                                    ┌──────▼───────┐
+                                    ┌──────▼───────�?
                                     │ Remote host  │
                                     │ or container │
                                     └──────────────┘
@@ -80,7 +80,14 @@ rekeyed host is refused unless its key is in the `known_hosts` file you point at
 `DEVX_SSH_ALLOW_UNKNOWN_KEYS` (throwaway `devx lab` containers, CI ephemeral
 servers).
 
-**Residual risk.** The `--accept-new-keys` / `DEVX_SSH_ALLOW_UNKNOWN_KEYS`
+
+
+**Default behavior:** When `DEVX_SSH_ALLOW_UNKNOWN_KEYS` is not set (or is
+`false`), `devx` will refuse to connect to hosts whose SSH host key is not
+already trusted (present in `~/.ssh/known_hosts` or configured via
+`DEVX_SSH_KNOWN_HOSTS`). Set `DEVX_SSH_KNOWN_HOSTS` to the path of your
+known hosts file, or accept the risks of `DEVX_SSH_ALLOW_UNKNOWN_KEYS=true`
+only for throwaway lab containers or CI runners.)**Residual risk.** The `--accept-new-keys` / `DEVX_SSH_ALLOW_UNKNOWN_KEYS`
 opt-in skips first-connection verification by design; use it only for
 disposable targets. Outside that, host-key confusion is mitigated by the
 refusal-to-connect default.

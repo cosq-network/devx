@@ -44,6 +44,9 @@ Work directly on cloud instances, remote Linux workstations, staging servers, or
 1. **Direct URIs**:
    ```bash
    devx ask "profile slow queries in @app.py" --remote ssh://ubuntu@192.168.1.50:22/srv/my-service --ssh-key ~/.ssh/id_ed25519
+
+# DEVX_SSH_KNOWN_HOSTS: Set this env var to your known_hosts file path
+export DEVX_SSH_KNOWN_HOSTS=~/.ssh/known_hosts
    ```
 2. **`~/.ssh/config` Host Aliases**:
    You can reference host aliases defined in your local `~/.ssh/config`:

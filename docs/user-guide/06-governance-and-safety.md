@@ -153,6 +153,29 @@ When running parallel tools across threads or processes, `devx` adheres strictly
 devx ask --approve-all "run pytest and format code"
 ```
 
+### SSH Remote Execution Policy
+
+When using remote backends (SSH or container), policy presets take extra effect:
+
+- **`strict`**: All execution occurs on the remote host; no local command fallback.
+- **`remote_only`**: forbids running shell commands on the local workstation; all commands run via SSH.
+- **`deny_local_writes`**: forbids modifying the local filesystem; remote writes are allowed.
+
+**Interactions with `--approve-all`:** In remote mode, `--approve-all` bypasses the approval gate on the remote host, but the local machine remains protected by the policy preset. This means a `strict` preset on an SSH connection will still enforce remote-only execution even with `--approve-all`.
+
+For CI runners with SSH backends, we recommend using `DEVX_POLICY_PRESET=strict` combined with `--approve-all` only in fully trusted environments.
+
+### SSH Remote Execution Policy
+
+When using remote backends (SSH or container), policy presets take extra effect:
+
+- **`strict`**: All execution occurs on the remote host; no local command fallback.
+- **`remote_only`**: forbids running shell commands on the local workstation; all commands run via SSH.
+- **`deny_local_writes`**: forbids modifying the local filesystem; remote writes are allowed.
+
+**Interactions with `--approve-all`:** In remote mode, `--approve-all` bypasses the approval gate on the remote host, but the local machine remains protected by the policy preset. This means a `strict` preset on an SSH connection will still enforce remote-only execution even with `--approve-all`.
+
+For CI runners with SSH backends, we recommend using `DEVX_POLICY_PRESET=strict` combined with `--approve-all` only in fully trusted environments.
 ---
 
 ## 6. Repository Rules & Skills Discovery (`.devx/rules/`)

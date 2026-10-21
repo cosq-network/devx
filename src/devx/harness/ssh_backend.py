@@ -18,7 +18,9 @@ from devx.harness.runtime import CancellationToken, RunCancelled
 
 # How long ``git ls-files``-based remote file discovery may run before the
 # tool falls back to a (slower) SFTP walk. Prevents a hung remote git process
-# from blocking a tool call indefinitely.
+# from blocking a tool call indefinitely. Can be overridden per-session via
+# the ``timeout`` argument to ``WorkspaceTools.run()`` or set globally via
+# the ``DEVX_REMOTE_TIMEOUT`` environment variable (seconds).
 _FAST_GIT_TIMEOUT = 15.0
 
 IGNORE_DIRS = {
