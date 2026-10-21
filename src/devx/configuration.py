@@ -165,6 +165,7 @@ def apply_init(
     base_url: str = "",
     embeddings: bool = False,
     project: dict[str, Any] | None = None,
+    global_only: bool = False,
 ) -> dict[str, Any]:
     """Write project-scoped devx configuration for a workspace (``devx init``).
 
@@ -175,6 +176,11 @@ def apply_init(
     files. Test/lint commands are intentionally not part of ``init``: any
     existing ``test_command``/``lint_command`` in ``.devx/config.json`` is
     preserved by the merge.
+
+    If ``global_only`` is ``True``, writes to the user global config at
+    ``~/.devx/config.json`` instead of the workspace-local ``.devx/config.json``.
+    In this mode the ``workspace`` parameter is ignored and the function returns
+    a summary with ``config_path`` pointing to the global location.
 
     Returns a summary dict (``provider``, ``model``, ``base_url``,
     ``embeddings``, ``config_path``, ``env_path``) for the CLI banner and wizard
@@ -190,9 +196,15 @@ def apply_init(
     resolved_base_url = base_url.strip() or (PROVIDERS[name].get("base_url") or "")
     embeddings_enabled = bool(embeddings)
 
-    devx_dir = workspace / ".devx"
-    devx_dir.mkdir(parents=True, exist_ok=True)
-    config_path = devx_dir / "config.json"
+    if global_only:
+        # Write to user global config instead of workspace-local config
+        devx_dir = Path.home() / ".devx"
+        devx_dir.mkdir(parents=True, exist_ok=True)
+        config_path = devx_dir / "config.json"
+    else:
+        devx_dir = workspace / ".devx"
+        devx_dir.mkdir(parents=True, exist_ok=True)
+        config_path = devx_dir / "config.json"
     project_config: dict[str, Any] = {}
     if config_path.is_file():
         try:

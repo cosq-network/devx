@@ -18,7 +18,14 @@ class Metric:
 
 
 class MetricsCollector:
-    """Thread-safe metrics collector for Prometheus exposition."""
+    """Thread-safe metrics collector for Prometheus exposition.
+    
+    Metric lists are bounded in length to prevent unbounded memory growth
+    in long-running processes. When the maximum size is exceeded, the
+    oldest entries are pruned.
+    """
+    
+    MAX_ENTRIES = 1000  # keep only the last 1000 entries per metric name
     
     def __init__(self):
         self._metrics: dict[str, list[Metric]] = defaultdict(list)
@@ -34,6 +41,9 @@ class MetricsCollector:
         with self._lock:
             self._counters[key] += value
             self._metrics[name].append(Metric(name, self._counters[key], labels, metric_type="counter"))
+            # Prune to maximum entries to prevent unbounded memory growth
+            if len(self._metrics[name]) > self.MAX_ENTRIES:
+                self._metrics[name] = self._metrics[name][-self.MAX_ENTRIES:]
     
     def set_gauge(self, name: str, value: float, labels: dict[str, str] | None = None) -> None:
         """Set a gauge value."""
@@ -42,6 +52,9 @@ class MetricsCollector:
         with self._lock:
             self._gauges[key] = value
             self._metrics[name].append(Metric(name, value, labels, metric_type="gauge"))
+            # Prune to maximum entries to prevent unbounded memory growth
+            if len(self._metrics[name]) > self.MAX_ENTRIES:
+                self._metrics[name] = self._metrics[name][-self.MAX_ENTRIES:]
     
     def observe(self, name: str, value: float, labels: dict[str, str] | None = None) -> None:
         """Observe a value for histogram."""
@@ -50,6 +63,9 @@ class MetricsCollector:
         with self._lock:
             self._histograms[key].append(value)
             self._metrics[name].append(Metric(name, value, labels, metric_type="histogram"))
+            # Prune to maximum entries to prevent unbounded memory growth
+            if len(self._metrics[name]) > self.MAX_ENTRIES:
+                self._metrics[name] = self._metrics[name][-self.MAX_ENTRIES:]
     
     @contextmanager
     def timing(self, name: str, labels: dict[str, str] | None = None):

@@ -114,7 +114,13 @@ class WorkspaceTools:
         content, warning = self._apply_secret_policy(rel, content)
         return ToolResult(True, content, warning=warning)
 
-    def write(self, path: str | Path, content: str, *, approved: bool = False) -> ToolResult:
+    def write(self, path: str | Path, content: str, *, approved: bool = False, expected_hash: str | None = None) -> ToolResult:
+        """Write content to a file inside the workspace.
+
+        If ``expected_hash`` is provided, the file's current SHA-256 hash is
+        checked *before* writing; if the hash differs, the write is rejected
+        so that a concurrent reader cannot silently clobber hand-edited content.
+        """
         target = self._approved_path(self._normalize_target_path(path), approved)
         encoded = content.encode("utf-8")
         if len(encoded) > self.max_bytes:
@@ -131,6 +137,14 @@ class WorkspaceTools:
             hits = scan_secrets(content)
             if hits:
                 warning = self._secret_summary(rel, hits)
+        # --- TOCTOU guard: re-read and verify hash if expected_hash given ---
+        if expected_hash is not None:
+            try:
+                current_hash = self.backend.file_hash(rel)
+                if current_hash != expected_hash:
+                    return ToolResult(False, "CONFLICT: file changed since inspection; write aborted")
+            except (OSError, UnicodeError):
+                pass  # if we can't hash, proceed (best-effort)
         before = self.backend.file_hash(rel)
         backup = None
         if self.journal and self.backend.exists(rel):
@@ -189,8 +203,20 @@ class WorkspaceTools:
             return ToolResult(False, "PATCH FAILED: expected text was not found")
         if current.count(old) != 1:
             return ToolResult(False, "PATCH FAILED: expected text is not unique")
-        preview = "".join(difflib.unified_diff(current.splitlines(True), current.replace(old, new).splitlines(True), fromfile=str(target), tofile=str(target)))
-        result = self.write(target, current.replace(old, new), approved=approved)
+        # Re-read the file right before writing to catch any concurrent modification
+        try:
+            current_before_write = self.backend.read_bytes(rel, self.max_bytes).decode("utf-8")
+        except (OSError, UnicodeError) as exc:
+            return ToolResult(False, str(exc))
+        # Verify the hash is still the same after the re-read
+        if expected_hash is not None:
+            new_hash = self.backend.file_hash(rel)
+            if new_hash != expected_hash:
+                return ToolResult(False, "CONFLICT: file changed between read and write")
+        # Perform the replacement on the re-read content (protects against TOCTOU)
+        updated = current_before_write.replace(old, new, 1)
+        result = self.write(target, updated, approved=approved, expected_hash=expected_hash)
+        preview = "".join(difflib.unified_diff(current.splitlines(True), updated.splitlines(True), fromfile=str(target), tofile=str(target)))
         return ToolResult(result.ok, (preview + "\n" + result.output)[:self.max_bytes], result.exit_code)
 
     def preview_replace(self, path: str | Path, old: str, new: str) -> str:

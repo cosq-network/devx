@@ -12,9 +12,10 @@ Before installing `devx`, ensure your machine has:
 - **Python**: Version 3.11, 3.12, or 3.13.
 - **Git**: Installed and available on your system `PATH`.
 - **Operating System**: Windows, macOS, or Linux.
-- **Optional**:
-  - **Docker**: Required only if you intend to use container workspaces (`--container`) or the throwaway container lab (`devx lab`).
-  - **OpenSSH Client**: Required only for remote SSH execution (`--remote`).
+
+### Optional Components
+- **Docker**: Required only if you intend to use container workspaces (`--container`) or the throwaway container lab (`devx lab`).
+- **OpenSSH Client**: Required only for remote SSH execution (`--remote`).
 
 Verify your Python installation:
 ```bash
@@ -31,7 +32,7 @@ python --version
 ### Installation Options by Extras
 
 | Extra | Included Dependencies | Purpose |
-|---|---|---|
+|-------|---|---|
 | `cli` | `typer`, `rich` | Command-line interface commands (`devx ask`, `devx init`, etc.) |
 | `tui` | `textual` | Interactive full-screen terminal user interface (`devx tui`) |
 | `agent` | `langchain`, `langgraph`, `aiosqlite`, `langchain-openai` | Supervisor agent engine and state graph |
@@ -127,12 +128,16 @@ Running `devx init` in an interactive terminal opens the full-screen centered se
    - **OpenRouter**: Access to top models, including free community models (`openrouter/free`).
    - **OpenAI**: GPT-4.1, GPT-4o, GPT-4o-mini, o3-mini.
    - **Anthropic**: Claude 3.5 Sonnet, Claude 3.7 Sonnet.
-   - **Google**: Gemini 2.0 Flash, Gemini 1.5 Pro (no base URL required).
-   - **Azure**: Azure OpenAI deployments.
    - **Ollama**: Free local models (`llama3.1:8b`, `qwen2.5-coder`).
+   
+   *Note: Google and Azure providers have been removed from the curated list. If you need these providers, you can configure them via environment variables or edit `~/.devx/config.json` directly.*
+
 2. **Select Coding Model**: Filtered to models specifically evaluated for code generation and tool calling.
+
 3. **Configure API Key**: Masked input dialog (never displayed in plain text or echoed to transcript).
+
 4. **Base URL**: Set automatically for standard providers, or customized for proxy servers / local Ollama (`http://localhost:11434/v1`).
+
 5. **Local Embeddings**: Toggle local ONNX embeddings for semantic codebase search.
 
 ### Non-Interactive / Scripted Initialization
@@ -150,11 +155,36 @@ devx init --provider openrouter --model openrouter/free --api-key "$OPENROUTER_A
 devx init --provider ollama --model qwen2.5-coder --base-url http://localhost:11434/v1 -y
 ```
 
+### Global Configuration Mode (New)
+
+`devx init` now supports writing to the **user global config** at `~/.devx/config.json` instead of the workspace-local `.devx/config.json`. This is useful for machine-setups, CI containers, or shared environments where you want a single config file outside the project tree.
+
+```bash
+# Write to global config instead of workspace config
+devx init --global-only \
+    --provider openai \
+    --model gpt-4o \
+    --api-key "$OPENAI_API_KEY" -y
+
+# Equivalent: set DEVX_INIT_GLOBAL_ONLY=1 environment variable
+devx init --provider openai --model gpt-4o --api-key "$OPENAI_API_KEY" -y
+```
+
+When `global_only` is enabled:
+- Config is written to `~/.devx/config.json` (user home directory)
+- The `workspace` parameter is ignored for config_path
+- `env_path` still resolves to `workspace/.env`
+- All subsequent `devx` commands will read the global config as the highest-precedence config source (after environment variables)
+
 ### What Gets Created?
 
-Initialization creates two clean configuration files:
+#### Normal Mode (default)
 - **`workspace/.devx/config.json`**: Non-secret project settings, permission policies, and context compaction limits. Safe to commit to version control.
 - **`workspace/.env`**: Secret credentials (`DEVX_API_KEY`), provider name, and model selection. **Must be added to `.gitignore`**.
+
+#### Global Mode (`--global-only`)
+- **`~/.devx/config.json`**: Non-secret project settings (provider, model, embeddings, context_compaction). This is the single source of config.
+- **`workspace/.env`**: Still created for workspace-specific credentials, but global config takes precedence for non-secret settings.
 
 ---
 
@@ -256,6 +286,7 @@ pip install -e ".[all]"
 ### Schema & Configuration Upgrade Guarantees
 
 - **Non-Destructive Database Migrations**: `devx` uses SQLite databases (`~/.devx/sessions.db`, `~/.devx/cache.db`, `~/.devx/knowledge_graph.db`). Schema changes (such as new columns for session branching or DLQ tracking) are applied on startup via idempotent `CREATE TABLE IF NOT EXISTS` and non-destructive `ALTER TABLE ADD COLUMN` migrations. Existing conversations and events are never dropped or mutated.
+
 - **Backward Compatibility**: `devx` maintains full backward compatibility for environment variable naming (`DEVX_*` with automatic fallback to legacy `DEV_*`) and legacy directory layouts (automatic fallback from `~/.devx/` to `~/.dev/` if an older installation exists).
 
 ---
@@ -280,6 +311,7 @@ pip uninstall devx-coding-agent
 
 #### Global User State (`~/.devx`)
 Contains your SQLite session store (`sessions.db`), semantic prompt cache (`cache.db`), global knowledge graph (`knowledge_graph.db`), and generated reviews/designs:
+
 ```bash
 # Linux / macOS:
 rm -rf ~/.devx
@@ -290,6 +322,7 @@ Remove-Item -Recurse -Force "$HOME\.devx"
 
 #### Offline Embeddings & ONNX Cache (`~/.cache/devx`)
 Contains downloaded open-weights embedding models (e.g., `all-MiniLM-L6-v2` ONNX INT8) and tokenizers:
+
 ```bash
 # Linux / macOS:
 rm -rf ~/.cache/devx
@@ -300,6 +333,7 @@ Remove-Item -Recurse -Force "$HOME\.cache\devx"
 
 #### Project-Level Workspaces
 Within repositories where you ran `devx init`, remove the local `.devx` configuration and `.env` credentials:
+
 ```bash
 # Inside workspace root:
 rm -rf .devx
@@ -314,3 +348,5 @@ rm -f .env
 - Explore [Core Concepts](02-core-concepts.md) to understand the agent state machine, approval gates, and session lifecycle.
 - Check out the [CLI Reference](03-cli-reference.md) for a complete catalog of all commands.
 - Master the [TUI Guide](04-tui-guide.md) to supercharge your terminal workflow.
+- Learn about [Governance and Safety](06-governance-and-safety.md) for policy enforcement and secret hygiene.
+- Read the [Threat Model](threat-model.md) for security architecture details.

@@ -98,13 +98,16 @@ devx init [OPTIONS]
 ```
 
 ### Options
-- `-p, --provider <name>`: LLM provider (`openai`, `openrouter`, `anthropic`, `google`, `azure`, `ollama`).
+- `-p, --provider <name>`: LLM provider (`openai`, `openrouter`, `anthropic`, `ollama`).  
+  
+   *Note: Google and Azure have been removed from the curated provider list. If you require these providers, you can configure them via environment variables (`DEVX_PROVIDER=google` or `DEVX_PROVIDER=azure`) or by directly editing `~/.devx/config.json`.*
 - `-m, --model <id>`: Coding model identifier (e.g. `gpt-4o`, `claude-3-7-sonnet`, `openrouter/free`).
 - `-k, --api-key <key>`: Provider API key.
 - `-u, --base-url <url>`: Custom API base URL endpoint.
 - `-e, --embeddings` / `--no-embeddings`: Enable local ONNX embeddings for semantic codebase indexing.
 - `-y, --non-interactive`: Bypass the interactive TUI wizard and apply defaults or command flags directly.
 
+  --global-only: Write configuration to the user global config at `~/.devx/config.json` instead of the workspace-local `.devx/config.json`. In this mode, the workspace path is used only for the `.env` file; all non-secret settings are stored globally.
 ### Examples
 ```bash
 # Launch interactive TUI setup wizard
@@ -112,6 +115,9 @@ devx init
 
 # Scripted non-interactive onboarding
 devx init --provider openrouter --model openrouter/free --api-key "$OPENROUTER_API_KEY" -y
+
+# Write to global config instead of workspace config
+devx init --global-only --provider openai --model gpt-4o --api-key "$OPENAI_API_KEY" -y
 ```
 
 ---

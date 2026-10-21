@@ -80,8 +80,9 @@ class Settings(BaseModel):
     1. Environment variables (``DEVX_*`` or legacy ``DEV_*``)
     2. Workspace ``.env`` file
     3. User global config (``~/.devx/config.env``)
-    4. Non-secret project config (``.devx/config.json``)
-    5. Built-in defaults
+    4. User global config (``~/.devx/config.json``)
+    5. Non-secret project config (``.devx/config.json``)
+    6. Built-in defaults
     """
 
     # LLM configuration
@@ -259,7 +260,7 @@ class Settings(BaseModel):
         2. Workspace ``.env`` file
         3. User global config ``~/.devx/config.env``
         4. Non-secret project config ``.devx/config.json``
-        5. Built-in defaults
+        6. Built-in defaults
         """
         # ── 1. Load env files ────────────────────────────────────────────
         legacy_path = Path.home() / ".dev" / "config.env"
@@ -530,3 +531,22 @@ class Settings(BaseModel):
 # ── Backwards-compatibility alias ─────────────────────────────────────
 
 DevState = Settings  # type: ignore[assignment]
+def _load_global_config() -> dict[str, Any]:
+    """Load user global configuration from ``~/.devx/config.json``.
+
+    Returns an empty dict if the file does not exist or is malformed.
+    Expected keys (non-secret): provider, model, embeddings, context_compaction fields,
+    mode, secret_scan_mode.  Secret keys (api_key) are stored separately in config.env
+    via UserConfig and have higher precedence than this file.
+    """
+    path = Path.home() / ".devx" / "config.json"
+    if not path.is_file():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    return value
+
