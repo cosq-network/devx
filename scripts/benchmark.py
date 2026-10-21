@@ -38,12 +38,10 @@ def _run_case(case: dict[str, Any]) -> dict[str, Any]:
             metrics = {"output_bytes": len(output.encode())}
         elif kind == "command_safety":
             tools = WorkspaceTools(PermissionPolicy(workspace, approval_required=False))
-            try:
-                tools.run(["rm", "-rf", "."], approved=True)
-            except PermissionError:
-                metrics = {"blocked": True}
-            else:  # pragma: no cover - a safety regression
+            result = tools.run(["rm", "-rf", "."], approved=True)
+            if result.ok:
                 raise AssertionError("destructive command was not blocked")
+            metrics = {"blocked": True}
         elif kind == "journal_rollback":
             journal = ChangeJournal(workspace / "changes.db")
             target = workspace / "file.txt"

@@ -23,15 +23,30 @@ def parse_file_mentions(
         raw = match.group(1).rstrip()
         if backend is not None and getattr(backend, "is_remote", False):
             clean = raw.strip().replace("\\", "/")
+            # Block obvious traversal
+            if ".." in clean.split("/"):
+                missing.append(raw)
+                continue
             if clean.startswith("/"):
-                remote_root = posixpath.normpath(backend.root)
+                remote_root = posixpath.normpath(backend.root) or "/"
                 clean_norm = posixpath.normpath(clean)
-                if clean_norm.startswith(remote_root):
+                # Ensure boundary
+                if not (clean_norm == remote_root or clean_norm.startswith(remote_root.rstrip("/") + "/")):
+                    missing.append(raw)
+                    continue
+                try:
                     rel = posixpath.relpath(clean_norm, remote_root)
-                else:
-                    rel = clean_norm.lstrip("/")
+                    if rel.startswith(".."):
+                        missing.append(raw)
+                        continue
+                except Exception:
+                    missing.append(raw)
+                    continue
             else:
                 rel = posixpath.normpath(clean)
+                if rel.startswith("..") or rel.startswith("/"):
+                    missing.append(raw)
+                    continue
 
             if backend.exists(rel):
                 p = Path(rel)

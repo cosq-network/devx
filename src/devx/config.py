@@ -88,7 +88,7 @@ class Settings(BaseModel):
     base_url: str = Field(default="http://localhost:4000/v1", description="OpenAI-compatible API endpoint")
     api_key: str = Field(default="sk-placeholder", description="API key for the LLM provider")
     model: str = Field(default="gpt-4o", description="Model name to use")
-    provider: str = Field(default="openai", description="Provider: openai, anthropic, google, azure")
+    provider: str = Field(default="openai", description="Provider: openai, anthropic, openrouter, ollama")
 
     # Workspace configuration
     workspace: Path = Field(default_factory=Path.cwd, description="Workspace root directory")
@@ -178,7 +178,7 @@ class Settings(BaseModel):
     )
     fallback_provider: str = Field(
         default="",
-        description="Fallback provider for automatic failover (e.g. openai, anthropic, google)",
+        description="Fallback provider for automatic failover (e.g. openai, anthropic, openrouter, ollama)",
     )
     fallback_model: str = Field(
         default="",

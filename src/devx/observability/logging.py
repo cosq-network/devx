@@ -50,22 +50,29 @@ class JSONFormatter(logging.Formatter):
     """JSON log formatter with correlation ID support."""
     
     def format(self, record: logging.LogRecord) -> str:
+        from devx.secrets import redact_secrets
         log_data = {
             "timestamp": datetime.now(UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
-            "message": record.getMessage(),
+            "message": redact_secrets(record.getMessage()),
             "correlation_id": get_correlation_id(),
         }
         
         # Add extra fields from record
         for key, value in record.__dict__.items():
             if key not in {"name", "msg", "args", "created", "filename", "funcName", "levelname", "levelno", "lineno", "module", "msecs", "message", "name", "pathname", "process", "processName", "relativeCreated", "thread", "threadName", "exc_info", "exc_text", "stack_info"}:
-                log_data[key] = value
+                try:
+                    if isinstance(value, str):
+                        log_data[key] = redact_secrets(value)
+                    else:
+                        log_data[key] = value
+                except Exception:
+                    log_data[key] = value
         
         # Add exception info if present
         if record.exc_info:
-            log_data["exception"] = self.formatException(record.exc_info)
+            log_data["exception"] = redact_secrets(self.formatException(record.exc_info))
         
         return json.dumps(log_data, default=str)
 
@@ -106,9 +113,22 @@ class StructuredLogger:
         self.logger = logging.getLogger(name)
     
     def _log(self, level: int, message: str, **kwargs: Any) -> None:
-        extra = {"correlation_id": get_correlation_id()}
-        extra.update(kwargs)
-        self.logger.log(level, message, extra=extra)
+        cid = get_correlation_id()
+        # Build extra without conflicting with factory-set attributes
+        extra: dict[str, Any] = {}
+        for k, v in kwargs.items():
+            if k in ("exc_info", "stack_info", "stacklevel"):
+                continue
+            extra[k] = v
+        extra["correlation_id"] = cid
+        try:
+            self.logger.log(level, message, extra=extra)
+        except KeyError:
+            # If still conflicting, log without extra
+            try:
+                self.logger.log(level, message)
+            except Exception:
+                pass
     
     def debug(self, message: str, **kwargs: Any) -> None:
         self._log(logging.DEBUG, message, **kwargs)
@@ -126,6 +146,7 @@ class StructuredLogger:
         self._log(logging.CRITICAL, message, **kwargs)
     
     def exception(self, message: str, **kwargs: Any) -> None:
+        kwargs.setdefault("exc_info", True)
         self._log(logging.ERROR, message, **kwargs)
 
 

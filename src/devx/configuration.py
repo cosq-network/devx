@@ -12,8 +12,6 @@ PROVIDERS: dict[str, dict[str, str]] = {
     "openai": {"adapter": "openai", "base_url": "https://api.openai.com/v1"},
     "openrouter": {"adapter": "openai", "base_url": "https://openrouter.ai/api/v1"},
     "anthropic": {"adapter": "anthropic", "base_url": "https://api.anthropic.com"},
-    "google": {"adapter": "google", "base_url": ""},
-    "azure": {"adapter": "azure", "base_url": ""},
     "ollama": {"adapter": "openai", "base_url": "http://localhost:11434/v1"},
 }
 
@@ -60,16 +58,6 @@ MODEL_CATALOG: dict[str, tuple[ModelInfo, ...]] = {
         ModelInfo("claude-3-5-sonnet-latest", tool_calling=True, coding=True),
         ModelInfo("claude-3-7-sonnet-latest", tool_calling=True, coding=True),
         ModelInfo("claude-sonnet-4-20250514", tool_calling=True, coding=True),
-    ),
-    "google": (
-        ModelInfo("gemini-2.0-flash", tool_calling=True, coding=True),
-        ModelInfo("gemini-2.5-flash", tool_calling=True, coding=True),
-        ModelInfo("gemini-2.5-pro", tool_calling=True, coding=True),
-    ),
-    "azure": (
-        ModelInfo("gpt-4o", tool_calling=True, coding=True),
-        ModelInfo("gpt-4o-mini", tool_calling=True, coding=True),
-        ModelInfo("gpt-4.1", tool_calling=True, coding=True),
     ),
     "ollama": (
         ModelInfo("qwen2.5-coder:7b", tool_calling=True, coding=True),
@@ -119,13 +107,9 @@ class UserConfig:
             raise ConfigurationError(f"Unknown provider: {provider}")
         details = PROVIDERS[name]
         values = {"DEVX_PROVIDER": name}
-        if details["base_url"]:
+        if details.get("base_url"):
             values["DEVX_BASE_URL"] = details["base_url"]
         else:
-            # Providers without a canonical base URL (google, azure) must not
-            # keep a stale URL from the previous provider. Remove the keys
-            # rather than writing an empty ``DEVX_BASE_URL=``, which would
-            # override Settings' default with an empty string.
             self.reset(("DEVX_BASE_URL", "DEV_BASE_URL"))
         self.update(values)
 

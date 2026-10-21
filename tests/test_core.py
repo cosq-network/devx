@@ -104,10 +104,10 @@ def test_workspace_can_be_selected_by_environment(tmp_path: Path, monkeypatch):
 def test_commands_are_gated_and_dangerous_commands_rejected(tmp_path: Path):
     tools = WorkspaceTools(PermissionPolicy(tmp_path), timeout=2)
     assert not tools.run(["python", "-c", "print(1)"]).ok
-    with pytest.raises(PermissionError):
-        tools.run(["rm", "-rf", "."], approved=True)
-    with pytest.raises(PermissionError):
-        tools.run(["python", "-c", "from pathlib import Path; Path('x').unlink()"], approved=True)
+    res = tools.run(["rm", "-rf", "."], approved=True)
+    assert not res.ok
+    res2 = tools.run(["python", "-c", "from pathlib import Path; Path('x').unlink()"], approved=True)
+    assert not res2.ok
 
 
 def test_approval_manager_defaults_to_deny_and_records_request():

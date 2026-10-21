@@ -71,9 +71,17 @@ class SemanticCache:
                 "SELECT response,embedding FROM cache WHERE embedding IS NOT NULL AND namespace=?",
                 (self.namespace,),
             ):
-                vector = json.loads(serialized)
+                try:
+                    vector = json.loads(serialized)
+                except Exception:
+                    continue
+                if len(vector) != len(query_vector):
+                    continue
                 denominator = math.sqrt(sum(x * x for x in query_vector) * sum(x * x for x in vector))
-                if denominator and sum(a * b for a, b in zip(query_vector, vector)) / denominator >= self.threshold:
+                if denominator == 0:
+                    continue
+                sim = sum(a * b for a, b in zip(query_vector, vector)) / denominator
+                if sim >= self.threshold:
                     return response
         return None
 

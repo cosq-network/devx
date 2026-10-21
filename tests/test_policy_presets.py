@@ -146,8 +146,9 @@ def test_deny_local_writes_allows_remote_write_through_tools(tmp_path: Path):
 def test_remote_only_blocks_local_command_through_tools(tmp_path: Path):
     settings = Settings(workspace=tmp_path, policy_preset="remote_only")
     tools = WorkspaceTools(PermissionPolicy.from_settings(settings))
-    with pytest.raises(PolicyPermissionError, match="remote_only"):
-        tools.run("echo hi", approved=True)
+    result = tools.run("echo hi", approved=True)
+    assert result.ok is False
+    assert "remote_only" in result.output.lower()
 
 
 # ── settings plumbing ──────────────────────────────────────────────────────

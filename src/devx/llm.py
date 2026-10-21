@@ -241,12 +241,7 @@ class OpenAIProvider(ModelProvider):
         }
         if settings.api_key and settings.api_key != "sk-placeholder":
             kwargs["api_key"] = SecretStr(settings.api_key)
-        if settings.provider == "azure":
-            kwargs["azure_deployment"] = settings.model
-            kwargs["api_version"] = "2024-02-15-preview"
-            kwargs["azure_endpoint"] = settings.base_url
-        else:
-            kwargs["base_url"] = settings.base_url
+        kwargs["base_url"] = settings.base_url
         return ChatOpenAI(**kwargs)
 
 
@@ -331,56 +326,7 @@ class AnthropicProvider(ModelProvider):
         )
 
 
-class GoogleProvider(ModelProvider):
-    @property
-    def name(self) -> str:
-        return "google"
 
-    @property
-    def supports_azure(self) -> bool:
-        return False
-
-    def validate_settings(self, settings: Settings) -> None:
-        if not settings.api_key or settings.api_key == "sk-placeholder":
-            raise ModelConfigurationError("Google provider requires a valid API key")
-
-    def create_model(self, settings: Settings) -> Any:
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        return ChatGoogleGenerativeAI(
-            model=settings.model,
-            google_api_key=SecretStr(settings.api_key),
-            temperature=0.1,
-        )
-
-
-class AzureProvider(ModelProvider):
-    @property
-    def name(self) -> str:
-        return "azure"
-
-    @property
-    def supports_azure(self) -> bool:
-        return True
-
-    def validate_settings(self, settings: Settings) -> None:
-        if not settings.api_key or settings.api_key == "sk-placeholder":
-            raise ModelConfigurationError("Azure OpenAI provider requires a valid API key")
-        if not settings.base_url:
-            raise ModelConfigurationError("Azure OpenAI provider requires a base URL")
-
-    def create_model(self, settings: Settings) -> Any:
-        from langchain_openai import ChatOpenAI
-        kwargs = {
-            "model": settings.model,
-            "temperature": 0.1,
-            "max_retries": 2,
-        }
-        if settings.api_key and settings.api_key != "sk-placeholder":
-            kwargs["api_key"] = SecretStr(settings.api_key)
-        kwargs["azure_deployment"] = settings.model
-        kwargs["api_version"] = "2024-02-15-preview"
-        kwargs["azure_endpoint"] = settings.base_url
-        return ChatOpenAI(**kwargs)
 
 
 # Registry
@@ -389,8 +335,6 @@ _PROVIDERS: dict[str, ModelProvider] = {
     "openrouter": OpenRouterProvider(),
     "ollama": OllamaProvider(),
     "anthropic": AnthropicProvider(),
-    "google": GoogleProvider(),
-    "azure": AzureProvider(),
 }
 
 

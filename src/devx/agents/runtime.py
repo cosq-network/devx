@@ -295,8 +295,12 @@ def build_coding_agent(
     def check_test_flakiness(test_target: str, runs: int = 3) -> str:
         """Probe a test multiple times in isolated processes to verify stability."""
         consume_tool_call()
+        cmd = ["python", "-m", "pytest", test_target, "-q"]
+        if not allowed("shell", " ".join(cmd), "Flakiness check may execute tests."):
+            tools.cancellation.raise_if_cancelled()
+            return "TEST EXECUTION DENIED: request user approval."
         from devx.test_engine.smart_runner import SmartTestRunner
-        runner = SmartTestRunner(settings)
+        runner = SmartTestRunner(settings, tools=tools)
         report = runner.check_flakiness(test_target, runs=min(max(runs, 2), 5))
         return f"Flakiness check for {test_target}: {report.passes}/{report.total_runs} passed ({report.pass_rate:.1f}%). Flaky: {report.is_flaky}. Durations: {report.durations}"
 
@@ -380,6 +384,16 @@ def build_coding_agent(
         if callable(target):
             target = target(arguments)
         target = str(target or spec.name)
+        try:
+            policy = getattr(tools, "policy", None)
+            if policy:
+                effect = policy.effect(action, target)
+                if effect == "deny":
+                    return f"{spec.name.upper()} DENIED: permission denied by policy."
+                if policy._matches_protected(target):
+                    pass  # Let approval check handle it
+        except Exception:
+            pass
         if tools.requires_approval(action, target) and not allowed(
             action, target, f"The tool {spec.name!r} requested an external action."
         ):

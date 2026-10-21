@@ -616,7 +616,7 @@ if typer is not None:
 
     @app.command()
     def init(
-        provider: str | None = typer.Option(None, "--provider", "-p", help="LLM provider (openai, anthropic, google, azure, ollama, openrouter)"),
+        provider: str | None = typer.Option(None, "--provider", "-p", help="LLM provider (openai, anthropic, ollama, openrouter)"),
         model: str | None = typer.Option(None, "--model", "-m", help="Model name"),
         api_key: str | None = typer.Option(None, "--api-key", "-k", help="API key"),
         base_url: str | None = typer.Option(None, "--base-url", "-u", help="Base URL for API"),
@@ -710,8 +710,7 @@ if typer is not None:
             api_key = "ollama"
 
         # Base URL: prompt only for providers without a canonical URL, and only
-        # when an interactive terminal is available. Non-interactive runs keep
-        # the provider default ("" for google/azure, resolved by apply_init).
+        # when an interactive terminal is available.
         if base_url is None:
             if provider_info["base_url"] or non_interactive or not _is_interactive_tty():
                 base_url = provider_info["base_url"]

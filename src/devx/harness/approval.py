@@ -44,23 +44,28 @@ ApprovalHandler = Callable[[ApprovalRequest], ApprovalDecision | bool]
 
 
 def matches_allow_rule(rules: object, action: str, target: str) -> bool:
-    """Return ``True`` when a project permission rule explicitly allows an action.
-
-    Rules are dictionaries with ``action``, ``resource`` (glob pattern) and
-    ``effect`` keys. Only rules whose ``effect`` is ``"allow"`` can auto-approve;
-    deny/ask rules never do. A ``resource`` of ``"*"`` matches anything.
-    """
+    """Return ``True`` when a project permission rule explicitly allows an action."""
     import fnmatch
+
+    normalized = str(action).strip().lower()
+    if normalized == "write":
+        normalized = "edit"
+    if normalized == "command":
+        normalized = "shell"
 
     for rule in rules or ():  # type: ignore[union-attr]
         if not isinstance(rule, dict):
             continue
         if str(rule.get("effect", "")).strip().lower() != "allow":
             continue
-        rule_action = str(rule.get("action", "*"))
-        if rule_action not in ("*", action):
+        rule_action = str(rule.get("action", "*")).strip().lower()
+        if rule_action == "write":
+            rule_action = "edit"
+        if rule_action == "command":
+            rule_action = "shell"
+        if rule_action not in ("*", normalized):
             continue
-        if fnmatch.fnmatch(str(target), str(rule.get("resource", "*"))):
+        if fnmatch.fnmatchcase(str(target), str(rule.get("resource", "*"))):
             return True
     return False
 

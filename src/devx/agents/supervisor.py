@@ -63,6 +63,9 @@ class SupervisorRunner:
             run_id=self.run_id,
             journal=journal,
             cancellation=self.cancellation,
+            backend=getattr(self.settings, "_backend", None) if hasattr(self.settings, "_backend") else None,
+            sandbox=getattr(self.settings, "sandbox", "none"),
+            secret_scan_mode=getattr(self.settings, "secret_scan_mode", "warn"),
         )
         self.registry = build_tool_registry(
             self.settings,
@@ -237,6 +240,7 @@ class SupervisorRunner:
                 checks_ok = True
 
             # Give the coder a bounded opportunity to repair either lint or tests.
+            last_coder_response = coding
             for _ in range(max(0, min(2, self.settings.max_iterations - state.iteration))):
                 cancellation.raise_if_cancelled()
                 if checks_ok:
@@ -247,6 +251,7 @@ class SupervisorRunner:
                     "The latest lint/test run failed. Inspect the failure, make a minimal approved fix, "
                     "and report the change.\n\nFailure:\n" + test_result
                 )}]})  # type: ignore[arg-type]
+                last_coder_response = repair
                 self._append_message(state, "coder", response_text(repair))
                 lint_ok = run_lint()
                 if lint_ok is False:
@@ -270,7 +275,7 @@ class SupervisorRunner:
             state.active_agent = "supervisor"
             if state.status != "tests_failed":
                 state.status = "completed"
-            state.result = response_text(coding) + "\n\nTests:\n" + test_result
+            state.result = response_text(last_coder_response) + "\n\nTests:\n" + test_result
         except RunCancelled as exc:
             state.status = "cancelled"
             self._event(state, {"type": "cancelled"})

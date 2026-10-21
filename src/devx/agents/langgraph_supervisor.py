@@ -266,6 +266,7 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
                 except Exception:
                     pass
             context = "\n\n".join(context_blocks)
+        else:
             context = read_context(selected, settings.max_file_bytes)
 
         from devx.rules import discover_project_rules, format_rules_for_prompt
@@ -515,15 +516,33 @@ def build_langgraph_supervisor(settings: Any, approvals: ApprovalManager, files:
                     result = tools.run(command, approved=True)
                     test_result_holder["result"] = ("ok" if result.ok else "failed", result.output or f"exit code: {result.exit_code}")
             
-            lint_thread = threading.Thread(target=run_lint)
-            test_thread = threading.Thread(target=run_test)
+            def safe_run_lint():
+                try:
+                    run_lint()
+                except Exception as e:
+                    lint_result_holder["result"] = ("failed", f"{e}")
+
+            def safe_run_test():
+                try:
+                    run_test()
+                except Exception as e:
+                    test_result_holder["result"] = ("failed", f"{e}")
+
+            lint_thread = threading.Thread(target=safe_run_lint)
+            test_thread = threading.Thread(target=safe_run_test)
             lint_thread.start()
             test_thread.start()
             lint_thread.join()
             test_thread.join()
-            
-            lint_status, lint_output = lint_result_holder["result"]
-            test_status, test_output = test_result_holder["result"]
+
+            if lint_result_holder["result"] is None:
+                lint_status, lint_output = "failed", "Lint execution failed"
+            else:
+                lint_status, lint_output = lint_result_holder["result"]
+            if test_result_holder["result"] is None:
+                test_status, test_output = "failed", "Test execution failed"
+            else:
+                test_status, test_output = test_result_holder["result"]
             
             state["lint_result"] = lint_output
             emit(state, {"type": "lint_finished", "ok": lint_status == "ok", "exit_code": 0 if lint_status == "ok" else 1})

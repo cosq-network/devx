@@ -58,7 +58,7 @@ def validate_init(provider: str, model: str, api_key: str, base_url: str = "") -
     if not provider:
         return "Select a provider."
     if provider not in PROVIDERS:
-        return f"Unknown provider: {provider}"
+        return f"{provider} is not a recognized provider."
     if provider != "ollama" and not api_key.strip():
         return "Enter an API key, or choose Ollama for a local model."
     if not base_url.strip() and not PROVIDERS[provider].get("base_url"):

@@ -103,18 +103,17 @@ class TestValidateInit:
         assert validate_init("", "gpt-4o", "sk") == "Select a provider."
 
     def test_unknown_provider(self):
-        assert validate_init("nope", "gpt-4o", "sk") == "Unknown provider: nope"
+        assert validate_init("nope", "gpt-4o", "sk") == "nope is not a recognized provider."
 
     def test_non_ollama_requires_api_key(self):
         assert validate_init("openai", "gpt-4o", "") == (
             "Enter an API key, or choose Ollama for a local model."
         )
 
-    def test_provider_without_default_base_url_requires_one(self):
+    def test_unknown_provider_rejected(self):
         assert validate_init("google", "gemini-2.0-flash", "sk", "") == (
-            "google requires a base URL."
+            "google is not a recognized provider."
         )
-        assert validate_init("google", "gemini-2.0-flash", "sk", "https://llm.example.com") is None
 
     def test_model_required(self):
         assert validate_init("openai", "", "sk", "https://api.openai.com/v1") == (

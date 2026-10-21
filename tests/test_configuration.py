@@ -58,10 +58,11 @@ def test_secret_masking_never_returns_short_or_placeholder_secret():
 def test_set_provider_clears_stale_base_url_for_custom_url_providers(tmp_path: Path):
     config = UserConfig(tmp_path / "config.env")
     config.set_provider("openrouter")  # has a canonical base URL
-    config.set_provider("google")  # no canonical base URL
+    config.update({"DEVX_BASE_URL": "http://stale.example.test"})
+    config.set_provider("anthropic")
     text = config.path.read_text(encoding="utf-8")
-    assert "DEVX_PROVIDER=google" in text
-    assert "DEVX_BASE_URL" not in text
+    assert "DEVX_PROVIDER=anthropic" in text
+    assert "DEVX_BASE_URL=https://api.anthropic.com" in text
 
 
 def test_set_provider_rewrites_stale_base_url_for_url_providers(tmp_path: Path):
@@ -136,11 +137,11 @@ def test_apply_init_resets_base_url_when_empty(tmp_path: Path):
     env_path = tmp_path / ".env"
     env_path.write_text("DEVX_BASE_URL=https://old.endpoint/v1\n", encoding="utf-8")
 
-    result = apply_init(tmp_path, provider="google", model="gemini-2.0-flash", base_url="")
-    assert result["base_url"] == ""
+    result = apply_init(tmp_path, provider="anthropic", model="claude-sonnet-4-20250514", base_url="")
+    assert result["base_url"] == "https://api.anthropic.com"
 
     saved = env_path.read_text(encoding="utf-8")
-    assert "DEVX_PROVIDER=google" in saved
-    assert "DEVX_MODEL=gemini-2.0-flash" in saved
-    assert "DEVX_BASE_URL" not in saved
+    assert "DEVX_PROVIDER=anthropic" in saved
+    assert "DEVX_MODEL=claude-sonnet-4-20250514" in saved
+    assert "DEVX_BASE_URL=https://api.anthropic.com" in saved
 

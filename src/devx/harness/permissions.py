@@ -10,8 +10,13 @@ from pathlib import Path
 from typing import Any
 
 
-class PermissionError(RuntimeError):
+class PolicyPermissionError(OSError):
+    """Raised when a workspace action is denied by policy."""
     pass
+
+
+# Keep PermissionError as alias for compatibility
+PermissionError = PolicyPermissionError  # type: ignore[misc, assignment, no-redef]
 
 
 # Tokenizer for the Windows (posix=False) case: strips one level of surrounding
@@ -248,15 +253,16 @@ class PermissionPolicy:
         return result
 
     def requires_approval(self, action: str, target: str | Path) -> bool:
-        """Whether an action requires user approval based on the permission policy.
-        
-        Returns ``False`` if the policy ``effect`` is ``allow`` or ``deny``.
-        Returns ``True`` if the effect is ``ask`` (user prompt needed) or if
-        ``approval_required`` is ``True`` and the action is not a ``read`` action.
-        """
+        """Whether an action requires user approval based on the permission policy."""
         effect = self.effect(action, target)
-        if effect in {"allow", "deny"}:
+        if effect == "deny":
+            return True
+        if effect == "allow":
+            if self._matches_protected(target):
+                return True
             return False
+        if self._matches_protected(target):
+            return True
         return effect == "ask" or (self.approval_required and self._action(action) != "read")
 
     def _enforce(self, action: str, target: str | Path, *, approved: bool = False) -> None:

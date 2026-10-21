@@ -161,6 +161,9 @@ class LocalWorkspaceBackend(WorkspaceBackend):
                 bwrap_cmd.append("--")
                 bwrap_cmd.extend(args)
                 args = bwrap_cmd
+            else:
+                import logging
+                logging.getLogger(__name__).warning("Sandbox bwrap requested but not found; running unsandboxed")
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         try:
             process = subprocess.Popen(

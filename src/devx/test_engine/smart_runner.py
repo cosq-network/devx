@@ -39,9 +39,10 @@ class PreflightReport:
 class SmartTestRunner:
     """Manages selective test execution, flakiness probing, and integration preflight checks."""
 
-    def __init__(self, settings: Settings, workspace: Path | None = None):
+    def __init__(self, settings: Settings, workspace: Path | None = None, tools: Any | None = None):
         self.settings = settings
         self.workspace = workspace or settings.workspace
+        self.tools = tools
 
     def get_impacted_tests(self, modified_files: list[str] | None = None) -> list[str]:
         """Find test files impacted by modified source files using Test-Impact Analysis (TIA)."""
@@ -119,23 +120,34 @@ class SmartTestRunner:
             try:
                 env = os.environ.copy()
                 env["PYTHONHASHSEED"] = str(i * 42)  # vary hash seed for ordering robustness
-                res = subprocess.run(
-                    base_cmd,
-                    cwd=str(self.workspace),
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_per_run,
-                    env=env,
-                    check=False,
-                )
-                duration = time.time() - t0
-                durations.append(round(duration, 3))
-
-                if res.returncode == 0:
-                    passes += 1
+                if self.tools is not None:
+                    res = self.tools.run(base_cmd, approved=True, timeout=timeout_per_run)
+                    duration = time.time() - t0
+                    durations.append(round(duration, 3))
+                    if res.ok:
+                        passes += 1
+                    else:
+                        failures += 1
+                        failure_outputs.append(res.output or f"exit code: {res.exit_code}")
                 else:
-                    failures += 1
-                    failure_outputs.append(res.stdout + res.stderr)
+                    res = subprocess.run(
+                        base_cmd,
+                        cwd=str(self.workspace),
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout_per_run,
+                        env=env,
+                        check=False,
+                    )
+                    duration = time.time() - t0
+                    durations.append(round(duration, 3))
+
+                    if res.returncode == 0:
+                        passes += 1
+                    else:
+                        failures += 1
+                        out = (res.stdout or "") + (res.stderr or "")
+                        failure_outputs.append(out)
             except subprocess.TimeoutExpired:
                 durations.append(timeout_per_run)
                 failures += 1
