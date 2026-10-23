@@ -69,7 +69,15 @@ class ConfiguredGraph:
         try:
             return self.graph.invoke(state, config=self._config(config))
         except RunCancelled:
-            result: dict[str, Any] = dict(state)
+            if isinstance(state, dict):
+                result: dict[str, Any] = dict(state)
+            else:
+                try:
+                    result = dict(state)
+                except (TypeError, ValueError):
+                    result = {}
+                    if hasattr(state, "__dict__"):
+                        result.update(vars(state))
             result["status"] = "cancelled"
             result["result"] = "Run cancelled by user."
             events = result.setdefault("events", [])
@@ -79,7 +87,15 @@ class ConfiguredGraph:
             error_msg = str(exc)
             if _is_rate_limit_error(exc):
                 error_msg = f"Rate limit exceeded: {error_msg}. Please wait and retry, or switch to a different model."
-            result: dict[str, Any] = dict(state)
+            if isinstance(state, dict):
+                result: dict[str, Any] = dict(state)
+            else:
+                try:
+                    result = dict(state)
+                except (TypeError, ValueError):
+                    result = {}
+                    if hasattr(state, "__dict__"):
+                        result.update(vars(state))
             result["status"] = "failed"
             result["result"] = f"Agent run failed: {error_msg}"
             events = result.setdefault("events", [])

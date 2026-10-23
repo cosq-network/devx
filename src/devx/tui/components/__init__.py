@@ -4,6 +4,7 @@ from devx.tui.components.modals import (
     ApprovalModal,
     SecretInputModal,
     ProviderSetupModal,
+    ProviderSelectionModal,
     copy_to_clipboard,
 )
 from devx.tui.components.commands import HelpSystem, ProviderManager, ModelManager
@@ -15,6 +16,7 @@ __all__ = [
     "ApprovalModal",
     "SecretInputModal",
     "ProviderSetupModal",
+    "ProviderSelectionModal",
     "copy_to_clipboard",
     "HelpSystem",
     "ProviderManager",

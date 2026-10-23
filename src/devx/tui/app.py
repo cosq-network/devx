@@ -67,6 +67,7 @@ class DevTUI(App):
         ("f2", "copy_transcript", "Copy"),
         ("ctrl+c", "copy_or_cancel", "Copy/Cancel"),
         ("ctrl+q", "quit", "Quit"),
+        ("ctrl+p", "open_provider_selector", "Provider"),
     ]
     # Seconds between two Ctrl+C presses that trigger an app quit.
     DOUBLE_CTRL_C_WINDOW: ClassVar[float] = 1.5
@@ -97,7 +98,69 @@ class DevTUI(App):
         background: #202020;
         color: #f2f2f2;
     }
-    ProviderSetupModal {
+    /* Modal popups: a centred panel over a dimmed backdrop. */
+    ApprovalModal,
+    SecretInputModal,
+    PlanPreviewModal,
+    ProviderSetupModal,
+    ProviderSelectionModal {
+        align: center middle;
+        background: #000000a0;
+    }
+    #approval-dialog,
+    #secret-dialog,
+    #plan-preview-dialog,
+    #provider-selector {
+        width: 72;
+        max-width: 90%;
+        height: auto;
+        max-height: 90%;
+        padding: 1 2;
+        background: #151515;
+        border: round $accent;
+        color: $text;
+    }
+    #approval-dialog {
+        width: 78;
+    }
+    #approval-dialog > Label:first-child,
+    #plan-preview-dialog > Label:first-child,
+    #provider-selector #dialog-title {
+        text-style: bold;
+        color: $text;
+        margin-bottom: 1;
+    }
+    #approval-reason-label {
+        color: $text-muted;
+    }
+    #approval-preview,
+    #approval-details,
+    #secret-dialog > Label:first-child {
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+    #plan-content {
+        height: auto;
+        max-height: 24;
+        overflow-y: auto;
+        padding: 1;
+        background: #0d0d0d;
+        border: round #303030;
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+    .dialog-actions {
+        height: auto;
+        margin-top: 1;
+        align-horizontal: center;
+    }
+    .dialog-actions Button {
+        margin: 0 1;
+        min-width: 14;
+        height: 3;
+        padding: 0 2;
+    }
+    ProviderSelectionModal {
         align: center middle;
     }
     #welcome {
@@ -390,6 +453,18 @@ class DevTUI(App):
     def action_show_help(self, topic: str = "") -> None:
         self.help.show_help(topic)
 
+    def action_open_provider_selector(self) -> None:
+        """Open the provider and model selection popup widget."""
+        self.providers.open_selector()
+
+    def _on_provider_selection_confirmed(self, provider: str, model: str) -> None:
+        """Handle confirmed provider/model selection from the modal.
+
+        The modal persists the choice through ``apply_init``; this only keeps
+        the status bar in sync.
+        """
+        self.update_model_status()
+
     def action_clear_chat(self) -> None:
         self.actions.clear_chat()
 
@@ -434,6 +509,8 @@ class DevTUI(App):
             self.actions.run_plan(task)
         elif value == "/provider" or value == "/provider list":
             self.providers.show_providers()
+        elif value == "/provider select":
+            self.providers.open_selector()
         elif value.startswith("/provider use "):
             self.providers.select_provider(value.partition(" ")[2].partition(" ")[2])
         elif value.startswith("/provider "):

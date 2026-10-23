@@ -4,7 +4,6 @@ import json
 import logging
 import sys
 import uuid
-import shutil
 from dataclasses import replace
 from pathlib import Path
 
@@ -31,6 +30,41 @@ def main() -> None:
 
 if typer is not None:
     app = typer.Typer(name="devx", help="devx - local-first AI coding agent")  # type: ignore[attr-defined]
+
+    _RESET_PROMPTS = {
+        "all": "This will reset ALL devx configurations and caches.\n  - ~/.devx/ (config, config.env, sessions.db)\n  - ~/.cache/devx/ (embedding models)\n  - Project .devx/ and .env (if in workspace)\n\nAre you sure? [y/N]: ",
+        "global": "This will reset global config and sessions.\n  - ~/.devx/config.json, config.env and sessions.db\n\nAre you sure? [y/N]: ",
+        "project": "This will reset project config (.devx/ and .env).\n  - Keeps global config intact.\n\nAre you sure? [y/N]: ",
+        "cache": "This will reset cache and embedding models.\n  - ~/.cache/devx/ (ONNX models)\n  - ~/.devx/cache.db\n\nAre you sure? [y/N]: ",
+        "sessions": "This will reset only the session database.\n  - ~/.devx/sessions.db\n\nAre you sure? [y/N]: ",
+    }
+
+    _RESET_COMPLETION_MESSAGES = {
+        "all": "Reset complete! Your devx installation is now fresh.",
+        "global": "Global config and sessions reset complete!",
+        "project": "Project config reset complete! Global config kept intact.",
+        "cache": "Cache reset complete!",
+        "sessions": "Session database reset complete!",
+    }
+
+    def _confirm_reset(scope: str, force: bool = False, yes: bool = False) -> bool:
+        """Ask the operator to confirm a destructive reset.
+
+        ``--force`` / ``--yes`` skip the prompt entirely. When stdin is closed
+        (CI, piped invocation) the read raises ``EOFError``; that is treated as
+        "declined" instead of crashing with a traceback.
+        """
+        if force or yes:
+            return True
+        prompt = _RESET_PROMPTS.get(scope, _RESET_PROMPTS["all"])
+        try:
+            response = input(prompt)
+        except (EOFError, KeyboardInterrupt):
+            typer.echo(
+                "\nNo confirmation received - pass --force or --yes to reset non-interactively."
+            )
+            return False
+        return response.lower().strip() in ("y", "yes")
 
     def _launch_tui(session: str | None = None) -> None:
         """Launch the TUI, shared by the default entry point and subcommand."""
@@ -1158,7 +1192,7 @@ if typer is not None:
             typer.echo("No git diff detected to review.")
             return
 
-        typer.echo(" Running multi-perspective code review...")
+        typer.echo("🔍 Running multi-perspective code review...")
         report = rev.review_diff(diff_text)
 
         if save:
@@ -1244,195 +1278,7 @@ if typer is not None:
             for t in impacted:
                 typer.echo(f"  - {t}")
             cmd = runner.build_targeted_test_command(impacted)
-            typer.echo(f"\
-
-# Reset command and helper functions
-
-import shutil as _shutil
-from pathlib import Path
-
-def _reset_global_config() -> None:
-    """Reset global config and sessions."""
-    devx_global = Path.home() / ".devx"
-    config_path = devx_global / "config.json"
-    if config_path.exists():
-        config_path.unlink()
-    sessions_path = devx_global / "sessions.db"
-    if sessions_path.exists():
-        sessions_path.unlink()
-
-
-def _reset_cache() -> None:
-    """Reset cache and embeddings."""
-    cache_dir = Path.home() / ".cache" / "devx"
-    if cache_dir.exists():
-        _shutil.rmtree(cache_dir)
-    cache_db = devx_global / "cache.db"
-    if cache_db.exists():
-        cache_db.unlink()
-
-
-def _reset_project_config(workspace: Path) -> None:
-    """Reset project-level configuration."""
-    devx_dir = workspace / ".devx"
-    if devx_dir.exists():
-        _shutil.rmtree(devx_dir)
-    env_path = workspace / ".env"
-    if env_path.exists():
-        env_path.unlink()
-
-
-def _confirm_reset(reset_type: str, force: bool = False, yes: bool = False) -> bool:
-    """Prompt user for confirmation."""
-    if force or yes:
-        return True
-    prompts = {
-        "all": "This will reset ALL devx configurations and caches.\n  - ~/.devx/ (sessions, knowledge graph, config)\n  - ~/.cache/devx/ (embedding models)\n  - Project .devx/ and .env (if in workspace)\n\nAre you sure? [y/N]: ",
-        "global": "This will reset global config and sessions.\n  - ~/.devx/config.json and ~/.devx/sessions.db\n\nAre you sure? [y/N]: ",
-        "project": "This will reset project config (.devx/ and .env).\n  - Keeps global config intact.\n\nAre you sure? [y/N]: ",
-        "cache": "This will reset cache and embedding models.\n  - ~/.cache/devx/ (ONNX models)\n  - ~/.devx/cache.db\n\nAre you sure? [y/N]: ",
-        "sessions": "This will reset session database and event logs.\n  - ~/.devx/sessions.db\n  - DLQ entries removed\n\nAre you sure? [y/N]: ",
-    }
-    if yes:
-        return True
-    response = input(prompts[reset_type])
-    return response.lower().strip() in ("y", "yes")
-
-
-def _reset_all(force: bool = False, yes: bool = False) -> None:
-    """Reset all configurations and caches."""
-    if not _confirm_reset("all", force, yes):
-        typer.echo("Reset cancelled.")
-        return
-    _reset_global_config()
-    _reset_cache()
-    workspace = Path.cwd()
-    if (workspace / ".devx").exists():
-        _reset_project_config(workspace)
-    typer.echo("Reset complete! Your devx installation is now fresh.")
-
-
-def _reset_global(force: bool = False, yes: bool = False) -> None:
-    """Reset only global configuration and sessions."""
-    if not _confirm_reset("global", force, yes):
-        typer.echo("Reset cancelled.")
-        return
-    _reset_global_config()
-    typer.echo("Global config and sessions reset complete!")
-
-
-def _reset_project(workspace: Path, force: bool = False, yes: bool = False) -> None:
-    """Reset only project-level configuration."""
-    if not _confirm_reset("project", force, yes):
-        typer.echo("Reset cancelled.")
-    _reset_project_config(workspace)
-    typer.echo("Project config reset complete! Global config kept intact.")
-
-
-def _reset_cache_only(force: bool = False, yes: bool = False) -> None:
-    """Reset only cache and embeddings."""
-    if not _confirm_reset("cache", force, yes):
-        typer.echo("Reset cancelled.")
-    _reset_cache()
-    typer.echo("Cache reset complete!")
-
-
-def _reset_sessions_only(force: bool = False, yes: bool = False) -> None:
-    """Reset only session database and event logs."""
-    if not _confirm_reset("sessions", force, yes):
-        typer.echo("Reset cancelled.")
-    _reset_global_config()
-    typer.echo("Session database reset complete!")
-
-
-@app.command()
-def reset(
-    _click: typer.Context,
-    --all: bool = typer.Option(
-        True,
-        "--all",
-        help="Reset all configurations and caches. This is the default behavior.",
-    ),
-    --global: bool = typer.Option(
-        False,
-        "--global",
-        help="Reset only global configuration and sessions (~/.devx/config.json and ~/.devx/sessions.db).",
-    ),
-    --project: bool = typer.Option(
-        False,
-        "--project",
-        help="Reset only project-level configuration (.devx/ and .env). Keeps global config intact.",
-    ),
-    --cache: bool = typer.Option(
-        False,
-        "--cache",
-        help="Reset only cache and embeddings (~/.cache/devx/ and ~/.devx/cache.db).",
-    ),
-    --sessions: bool = typer.Option(
-        False,
-        "--sessions",
-        help="Reset only session database and event logs (~/.devx/sessions.db).",
-    ),
-    --force: bool = typer.Option(
-        False,
-        "--force",
-        help="Skip confirmation prompt.",
-    ),
-    --yes: bool = typer.Option(
-        False,
-        "--yes",
-        help="Assume yes for all prompts, useful for CI/CD.",
-    ),
-) -> None:
-    """Reset devx configurations and caches.
-
-    Options:
-    --all: Reset everything. Removes global config, sessions, cache, and project config.
-    --global: Reset only global config and sessions.
-    --project: Reset only project-level config (.devx/ and .env). Keeps global config intact.
-    --cache: Reset only cache and embeddings.
-    --sessions: Reset only session database and event logs.
-    --force: Skip confirmation prompt.
-    --yes: Assume yes for all prompts.
-
-    Examples:
-    devx reset                   # Reset everything
-    devx reset --global          # Reset global config and sessions only
-    devx reset --project         # Reset project config only
-    devx reset --cache           # Reset cache and embeddings only
-    devx reset --sessions        # Reset session database only
-    devx reset --force           # Skip confirmation prompt
-    devx reset --yes           # Assume yes for all prompts
-    """
-    reset_type = None
-    if --all:
-        reset_type = "all"
-    elif --global:
-        reset_type = "global"
-    elif --project:
-        reset_type = "project"
-    elif --cache:
-        reset_type = "cache"
-    elif --sessions:
-        reset_type = "sessions"
-    
-    if --force or --yes:
-        pass  # confirmation skipped
-    elif not _confirm_reset(reset_type, --force, --yes):
-        typer.echo("Reset cancelled.")
-        return
-    
-    if reset_type == "all":
-        _reset_all(--force, --yes)
-    elif reset_type == "global":
-        _reset_global(--force, --yes)
-    elif reset_type == "project":
-        _reset_project(Path.cwd(), --force, --yes)
-    elif reset_type == "cache":
-        _reset_cache_only(--force, --yes)
-    elif reset_type == "sessions":
-        _reset_sessions_only(--force, --yes)
-nTargeted command: {cmd}")
+            typer.echo(f"\nTargeted command: {cmd}")
         elif action == "flaky":
             if not target:
                 raise typer.BadParameter("Provide test target to probe: devx test flaky <test_file_or_spec>")
@@ -1454,277 +1300,98 @@ nTargeted command: {cmd}")
             typer.echo(f"Running unit tests: {unit_cmd}")
             subprocess.run(unit_cmd.split(), cwd=str(settings.workspace), check=False)
 
-@app.command()
-def reset(
-    _click: typer.Context,
-    --all: bool = typer.Option(
-        True,
-        "--all",
-        help="Reset all configurations and caches. This is the default behavior.",
-    ),
-    --global: bool = typer.Option(
-        False,
-        "--global",
-        help="Reset only global configuration and sessions (~/.devx/config.json and ~/.devx/sessions.db).",
-    ),
-    --project: bool = typer.Option(
-        False,
-        "--project",
-        help="Reset only project-level configuration (.devx/ and .env). Keeps global config intact.",
-    ),
-    --cache: bool = typer.Option(
-        False,
-        "--cache",
-        help="Reset only cache and embeddings (~/.cache/devx/ and ~/.devx/cache.db).",
-    ),
-    --sessions: bool = typer.Option(
-        False,
-        "--sessions",
-        help="Reset only session database and event logs (~/.devx/sessions.db).",
-    ),
-    --force: bool = typer.Option(
-        False,
-        "--force",
-        help="Skip confirmation prompt.",
-    ),
-    --yes: bool = typer.Option(
-        False,
-        "--yes",
-        help="Assume yes for all prompts, useful for CI/CD.",
-    ),
-) -> None:
-    """Reset devx configurations and caches.
+    @app.command()
+    def reset(
+        _click: typer.Context,
+        reset_all: bool = typer.Option(
+            False,
+            "--all",
+            help="Reset everything: global config, sessions, cache and project config.",
+        ),
+        reset_global: bool = typer.Option(
+            False,
+            "--global",
+            help="Reset only global config and sessions (~/.devx/config.json, config.env, sessions.db).",
+        ),
+        reset_project: bool = typer.Option(
+            False,
+            "--project",
+            help="Reset only project-level config (.devx/ and .env). Keeps global config intact.",
+        ),
+        reset_cache: bool = typer.Option(
+            False,
+            "--cache",
+            help="Reset only cache and embeddings (~/.cache/devx/ and ~/.devx/cache.db).",
+        ),
+        reset_sessions: bool = typer.Option(
+            False,
+            "--sessions",
+            help="Reset only the session database (~/.devx/sessions.db).",
+        ),
+        reset_force: bool = typer.Option(
+            False,
+            "--force",
+            help="Skip the confirmation prompt.",
+        ),
+        reset_yes: bool = typer.Option(
+            False,
+            "--yes",
+            help="Assume yes for all prompts, useful for CI/CD.",
+        ),
+    ) -> None:
+        """Reset devx configuration, sessions and caches.
 
-    Options:
-    --all: Reset everything. Removes global config, sessions, cache, and project config.
-    --global: Reset only global config and sessions.
-    --project: Reset only project-level config (.devx/ and .env). Keeps global config intact.
-    --cache: Reset only cache and embeddings.
-    --sessions: Reset only session database and event logs.
-    --force: Skip confirmation prompt.
-    --yes: Assume yes for all prompts.
+        Exactly one scope may be requested. When no scope flag is given the
+        command resets everything (--all).
 
-    Examples:
-    devx reset                   # Reset everything
-    devx reset --global          # Reset global config and sessions only
-    devx reset --project         # Reset project config only
-    devx reset --cache           # Reset cache and embeddings only
-    devx reset --sessions        # Reset session database only
-    devx reset --force           # Skip confirmation prompt
-    devx reset --yes           # Assume yes for all prompts
-    """
-    import shutil
-    from pathlib import Path
-    
-    def _reset_global_config() -> None:
-        """Reset global config and sessions."""
-    devx_global = Path.home() / ".devx"
-    config_path = devx_global / "config.json"
-    if config_path.exists():
-        config_path.unlink()
-    sessions_path = devx_global / "sessions.db"
-    if sessions_path.exists():
-        sessions_path.unlink()
+        Examples:
+        devx reset                 # Reset everything
+        devx reset --global        # Global config and sessions only
+        devx reset --project       # Project config only
+        devx reset --cache         # Cache and embeddings only
+        devx reset --sessions      # Session database only
+        devx reset --yes           # Skip the confirmation prompt
+        """
+        from devx.cli import reset as reset_ops
 
+        requested = [
+            scope
+            for scope, flag in (
+                ("all", reset_all),
+                ("global", reset_global),
+                ("project", reset_project),
+                ("cache", reset_cache),
+                ("sessions", reset_sessions),
+            )
+            if flag
+        ]
+        if len(requested) > 1:
+            raise typer.BadParameter(  # type: ignore[attr-defined]
+                "Choose only one reset scope: " + ", ".join(f"--{s}" for s in requested)
+            )
 
-def _reset_cache() -> None:
-    """Reset cache and embeddings."""
-    cache_dir = Path.home() / ".cache" / "devx"
-    if cache_dir.exists():
-        shutil.rmtree(cache_dir)
-    cache_db = devx_global / "cache.db"
-    if cache_db.exists():
-        cache_db.unlink()
+        scope = requested[0] if requested else "all"
+        workspace = Path.cwd()
 
+        if not _confirm_reset(scope, reset_force, reset_yes):
+            typer.echo("Reset cancelled.")
+            raise typer.Exit(0)
 
-def _reset_project_config(workspace: Path) -> None:
-    """Reset project-level configuration."""
-    devx_dir = workspace / ".devx"
-    if devx_dir.exists():
-        shutil.rmtree(devx_dir)
-    env_path = workspace / ".env"
-    if env_path.exists():
-        env_path.unlink()
+        removed: list[Path] = []
+        if scope in ("all", "global"):
+            removed.extend(reset_ops.reset_global_config())
+        if scope == "sessions":
+            removed.extend(reset_ops.reset_sessions())
+        if scope in ("all", "cache"):
+            removed.extend(reset_ops.reset_cache())
+        if scope in ("all", "project"):
+            removed.extend(reset_ops.reset_project_config(workspace))
 
+        if removed:
+            typer.echo(f"Removed {len(removed)} path(s):")
+            for path in removed:
+                typer.echo(f"  - {path}")
+        else:
+            typer.echo("Nothing to remove - devx was already clean.")
 
-def _confirm_reset(reset_type: str, force: bool = False, yes: bool = False) -> bool:
-    """Prompt user for confirmation."""
-    if force or yes:
-        return True
-    prompts = {
-        "all": "This will reset ALL devx configurations and caches.\n  - ~/.devx/ (sessions, knowledge graph, config)\n  - ~/.cache/devx/ (embedding models)\n  - Project .devx/ and .env (if in workspace)\n\nAre you sure? [y/N]: ",
-        "global": "This will reset global config and sessions.\n  - ~/.devx/config.json and ~/.devx/sessions.db\n\nAre you sure? [y/N]: ",
-        "project": "This will reset project config (.devx/ and .env).\n  - Keeps global config intact.\n\nAre you sure? [y/N]: ",
-        "cache": "This will reset cache and embedding models.\n  - ~/.cache/devx/ (ONNX models)\n  - ~/.devx/cache.db\n\nAre you sure? [y/N]: ",
-        "sessions": "This will reset session database and event logs.\n  - ~/.devx/sessions.db\n  - DLQ entries removed\n\nAre you sure? [y/N]: ",
-    }
-    if yes:
-        return True
-    response = input(prompts[reset_type])
-    return response.lower().strip() in ("y", "yes")
-
-
-def _reset_all(force: bool = False, yes: bool = False) -> None:
-    """Reset all configurations and caches."""
-    if not _confirm_reset("all", force, yes):
-        typer.echo("Reset cancelled.")
-        return
-    _reset_global_config()
-    _reset_cache()
-    workspace = Path.cwd()
-    if (workspace / ".devx").exists():
-        _reset_project_config(workspace)
-    typer.echo("Reset complete! Your devx installation is now fresh.")
-
-
-def _reset_global(force: bool = False, yes: bool = False) -> None:
-    """Reset only global configuration and sessions."""
-    if not _confirm_reset("global", force, yes):
-        typer.echo("Reset cancelled.")
-        return
-    _reset_global_config()
-    typer.echo("Global config and sessions reset complete!")
-
-
-def _reset_project(workspace: Path, force: bool = False, yes: bool = False) -> None:
-    """Reset only project-level configuration."""
-    if not _confirm_reset("project", force, yes):
-        typer.echo("Reset cancelled.")
-    _reset_project_config(workspace)
-    typer.echo("Project config reset complete! Global config kept intact.")
-
-
-def _reset_cache_only(force: bool = False, yes: bool = False) -> None:
-    """Reset only cache and embeddings."""
-    if not _confirm_reset("cache", force, yes):
-        typer.echo("Reset cancelled.")
-    _reset_cache()
-    typer.echo("Cache reset complete!")
-
-
-def _reset_sessions_only(force: bool = False, yes: bool = False) -> None:
-    """Reset only session database and event logs."""
-    if not _confirm_reset("sessions", force, yes):
-        typer.echo("Reset cancelled.")
-    _reset_global_config()
-    typer.echo("Session database reset complete!")
-
-
-def _reset_global_config() -> None:
-    """Reset global config and sessions."""
-    devx_global = Path.home() / ".devx"
-    config_path = devx_global / "config.json"
-    if config_path.exists():
-        config_path.unlink()
-    sessions_path = devx_global / "sessions.db"
-    if sessions_path.exists():
-        sessions_path.unlink()
-
-
-def _reset_cache() -> None:
-    """Reset cache and embeddings."""
-    cache_dir = Path.home() / ".cache" / "devx"
-    if cache_dir.exists():
-        shutil.rmtree(cache_dir)
-    cache_db = devx_global / "cache.db"
-    if cache_db.exists():
-        cache_db.unlink()
-
-
-def _reset_project_config(workspace: Path) -> None:
-    """Reset project-level configuration."""
-    devx_dir = workspace / ".devx"
-    if devx_dir.exists():
-        shutil.rmtree(devx_dir)
-    env_path = workspace / ".env"
-    if env_path.exists():
-        env_path.unlink()
-
-
-@app.command()
-def reset(
-    _click: typer.Context,
-    --all: bool = typer.Option(
-        True,
-        "--all",
-        help="Reset all configurations and caches. This is the default behavior.",
-    ),
-    --global: bool = typer.Option(
-        False,
-        "--global",
-        help="Reset only global configuration and sessions (~/.devx/config.json and ~/.devx/sessions.db).",
-    ),
-    --project: bool = typer.Option(
-        False,
-        "--project",
-        help="Reset only project-level configuration (.devx/ and .env). Keeps global config intact.",
-    ),
-    --cache: bool = typer.Option(
-        False,
-        "--cache",
-        help="Reset only cache and embeddings (~/.cache/devx/ and ~/.devx/cache.db).",
-    ),
-    --sessions: bool = typer.Option(
-        False,
-        "--sessions",
-        help="Reset only session database and event logs (~/.devx/sessions.db).",
-    ),
-    --force: bool = typer.Option(
-        False,
-        "--force",
-        help="Skip confirmation prompt.",
-    ),
-    --yes: bool = typer.Option(
-        False,
-        "--yes",
-        help="Assume yes for all prompts, useful for CI/CD.",
-    ),
-) -> None:
-    """Reset devx configurations and caches.
-
-    Options:
-    --all: Reset everything. Removes global config, sessions, cache, and project config.
-    --global: Reset only global config and sessions.
-    --project: Reset only project-level config (.devx/ and .env). Keeps global config intact.
-    --cache: Reset only cache and embeddings.
-    --sessions: Reset only session database and event logs.
-    --force: Skip confirmation prompt.
-    --yes: Assume yes for all prompts.
-
-    Examples:
-    devx reset                   # Reset everything
-    devx reset --global          # Reset global config and sessions only
-    devx reset --project         # Reset project config only
-    devx reset --cache           # Reset cache and embeddings only
-    devx reset --sessions        # Reset session database only
-    devx reset --force           # Skip confirmation prompt
-    devx reset --yes           # Assume yes for all prompts
-    """
-    reset_type = None
-    if --all:
-        reset_type = "all"
-    elif --global:
-        reset_type = "global"
-    elif --project:
-        reset_type = "project"
-    elif --cache:
-        reset_type = "cache"
-    elif --sessions:
-        reset_type = "sessions"
-    
-    if --force or --yes:
-        pass  # confirmation skipped
-    elif not _confirm_reset(reset_type, --force, --yes):
-        typer.echo("Reset cancelled.")
-        return
-    
-    if reset_type == "all":
-        _reset_all(--force, --yes)
-    elif reset_type == "global":
-        _reset_global(--force, --yes)
-    elif reset_type == "project":
-        _reset_project(Path.cwd(), --force, --yes)
-    elif reset_type == "cache":
-        _reset_cache_only(--force, --yes)
-    elif reset_type == "sessions":
-        _reset_sessions_only(--force, --yes)
+        typer.echo(_RESET_COMPLETION_MESSAGES[scope])

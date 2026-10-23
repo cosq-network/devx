@@ -131,6 +131,24 @@ class ProviderManager:
         except ConfigurationError as exc:
             self.app._write(str(exc))
 
+    def open_selector(self) -> None:
+        """Open the provider and model selection popup widget."""
+        from devx.config import Settings
+        from devx.tui.components.modals import ProviderSelectionModal
+
+        settings = Settings.load()
+        selector = ProviderSelectionModal(settings, self._on_provider_selection_confirmed)
+        self.app.push_screen(selector)
+
+    def _on_provider_selection_confirmed(self, provider: str, model: str) -> None:
+        """Handle confirmed provider/model selection from the modal.
+
+        The modal already persisted the choice through ``apply_init`` (the
+        shared ``devx init`` write path), so this only refreshes the UI.
+        """
+        self.app.update_model_status()
+        self.app._write(f"Selected: {provider} / {model}. New runs will use it.")
+
 
 class ModelManager:
     def __init__(self, app):
