@@ -59,32 +59,68 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 # Directories excluded from whole-tree scans; ``backups`` holds pre-write copies
 # of files the agent already read/wrote, so re-flagging them is noise.
 _SKIP_DIRS = {
+    # VCS metadata
     ".git",
     ".hg",
     ".svn",
+    # Python environments / caches
     ".venv",
     "venv",
-    "node_modules",
     "__pycache__",
     ".tox",
     ".nox",
-    "dist",
-    "build",
-    "backups",
+    ".eggs",
+    "site-packages",
     ".pytest_cache",
     ".mypy_cache",
     ".ruff_cache",
     ".devx",
+    # JS/TS build output
+    "node_modules",
+    ".next",
+    ".nuxt",
+    ".cache",
+    "coverage",
+    "htmlcov",
+    # Native / vendored dependencies
+    "vcpkg_installed",
+    "third_party",
+    "third-party",
+    "vendor",
+    "target",
+    ".cargo",
+    ".gradle",
+    "obj",
+    # Generic build output
+    "dist",
+    "build",
+    "backups",
+    # IDE metadata
+    ".vs",
+    ".idea",
+    "Pods",
+    "DerivedData",
 }
 
-# Binary-ish extensions never scanned.
+# Binary-ish extensions never scanned. This matters for speed as well as
+# correctness: compiled artifacts (``.lib``, ``.obj``, ``.pdb``, ...) can be
+# hundreds of megabytes and contain no readable secret assignments.
 _SKIP_SUFFIXES = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".svg",
     ".woff", ".woff2", ".ttf", ".otf", ".eot",
-    ".pyc", ".pyo", ".so", ".dll", ".exe", ".dylib", ".zip", ".gz", ".bz2", ".xz",
+    # Python / native object code
+    ".pyc", ".pyo", ".so", ".dll", ".exe", ".dylib", ".a", ".lib", ".obj",
+    ".o", ".lo", ".pdb", ".ilk", ".exp", ".out", ".bin", ".dat", ".class",
+    # Archives / packages
+    ".zip", ".gz", ".bz2", ".xz", ".7z", ".rar", ".tar", ".tgz", ".whl",
+    ".jar", ".war", ".ear", ".wasm", ".parquet",
+    # Documents / media
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".mp3", ".mp4", ".avi", ".mov", ".mkv", ".wav", ".flac",
 }
 
 _MAX_SCAN_FILE_BYTES = 1_000_000
+_BINARY_SNIFF_BYTES = 8192
 
 
 def mask_secret(value: str, visible: int = 4) -> str:
@@ -119,15 +155,28 @@ def scan_bytes(data: bytes) -> list[SecretHit]:
     return scan_secrets(data.decode("utf-8", errors="replace"))
 
 
+def _looks_binary(data: bytes) -> bool:
+    """Heuristic: NUL bytes in the first few KB mean a binary file."""
+    return b"\x00" in data[:_BINARY_SNIFF_BYTES]
+
+
 def scan_file(path: str | Path) -> list[SecretHit]:
-    """Scan one file and return its hits. OSErrors and oversized files yield []."""
+    """Scan one file and return its hits. OSErrors and oversized files yield [].
+
+    Binary files are skipped by content sniffing even when their extension is
+    unknown (e.g. compiled artifacts with no suffix), which keeps whole-tree
+    scans fast and avoids noise from lossy-decoded machine code.
+    """
     candidate = Path(path)
     try:
         if candidate.stat().st_size > _MAX_SCAN_FILE_BYTES:
             return []
-        return scan_bytes(candidate.read_bytes())
+        data = candidate.read_bytes()
     except OSError:
         return []
+    if _looks_binary(data):
+        return []
+    return scan_bytes(data)
 
 
 def redact_secrets(data: str) -> str:
@@ -164,20 +213,48 @@ def scan_tree(root: str | Path) -> list[tuple[str, SecretHit]]:
 
     Well-known dependency/build directories and binary files are skipped, and
     files larger than 1 MB are ignored so the scan stays fast on real repos.
+    Traversal is pruned (never descending into skipped directories) and does
+    not follow symlinks, so it cannot loop or wander outside the workspace.
     """
     root_dir = Path(root).expanduser()
     found: list[tuple[str, SecretHit]] = []
     if not root_dir.is_dir():
         return found
-    for path in sorted(root_dir.rglob("*")):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(root_dir)
-        parts = rel.parts
-        if any(part in _SKIP_DIRS for part in parts):
-            continue
-        if path.suffix.lower() in _SKIP_SUFFIXES:
-            continue
-        for hit in scan_file(path):
-            found.append((rel.as_posix(), hit))
+
+    visited: set[Path] = set()
+
+    def _walk(directory: Path, rel_prefix: Path) -> None:
+        try:
+            real = directory.resolve()
+        except OSError:
+            return
+        if real in visited:
+            return
+        visited.add(real)
+        try:
+            entries = sorted(directory.iterdir(), key=lambda p: p.name)
+        except OSError:
+            return
+        for entry in entries:
+            try:
+                if entry.is_symlink():
+                    # Never follow links: they can cycle or escape the workspace.
+                    continue
+                if entry.is_dir():
+                    name = entry.name
+                    if name in _SKIP_DIRS:
+                        continue
+                    _walk(entry, rel_prefix / name)
+                    continue
+                if not entry.is_file():
+                    continue
+                if entry.suffix.lower() in _SKIP_SUFFIXES:
+                    continue
+            except OSError:
+                continue
+            rel = rel_prefix / entry.name
+            for hit in scan_file(entry):
+                found.append((rel.as_posix(), hit))
+
+    _walk(root_dir, Path("."))
     return found

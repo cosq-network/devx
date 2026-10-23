@@ -3,12 +3,14 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from typer.testing import CliRunner
 
 from devx.cli.app import app
 from devx.harness.permissions import PermissionPolicy
 from devx.harness.tools import WorkspaceTools
-from devx.secrets import redact_secrets, scan_secrets, scan_tree
+from devx.secrets import redact_secrets, scan_file, scan_secrets, scan_tree
 
 runner = CliRunner()
 
@@ -82,6 +84,64 @@ def test_scan_tree_skips_node_modules(tmp_path: Path):
     hits = {(rel, hit.kind) for rel, hit in scan_tree(tmp_path)}
     assert ("conf.env", "openai-key") in hits
     assert not any(rel.startswith("node_modules") for rel, _ in hits)
+
+
+def test_scan_tree_skips_vendored_and_build_directories(tmp_path: Path):
+    for name in ("vcpkg_installed", "third_party", "vendor", "dist", "build", ".cache"):
+        directory = tmp_path / name
+        directory.mkdir()
+        (directory / "leak.env").write_text(f"OPENAI_API_KEY={OPENAI_KEY}\n")
+    (tmp_path / "ok.env").write_text(f"OPENAI_API_KEY={OPENAI_KEY}\n")
+
+    hits = scan_tree(tmp_path)
+
+    # Only the top-level file is scanned; ignored trees never even descend.
+    assert [(rel, hit.kind) for rel, hit in hits] == [("ok.env", "openai-key")]
+
+
+def test_scan_tree_scans_hidden_source_directories(tmp_path: Path):
+    # Hidden *metadata* dirs are skipped, but hidden source dirs like .github
+    # can legitimately contain pipeline secrets and must still be scanned.
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text(f"token: {OPENAI_KEY}\n")
+
+    hits = scan_tree(tmp_path)
+
+    assert [rel for rel, _ in hits] == [".github/workflows/ci.yml"]
+
+
+def test_scan_tree_skips_binary_extensions(tmp_path: Path):
+    # A compiled artifact can be huge; the suffix alone must be enough to skip.
+    (tmp_path / "libssl.lib").write_text(f"OPENAI_API_KEY={OPENAI_KEY}\n")
+    (tmp_path / "app.py").write_text("print('hi')\n")
+
+    assert scan_tree(tmp_path) == []
+
+
+def test_scan_file_sniffs_binary_content_without_suffix(tmp_path: Path):
+    artifact = tmp_path / "compiled-artifact"
+    artifact.write_bytes(b"\x00\x01sk-" + b"a" * 30 + b"\x00")
+
+    assert scan_file(artifact) == []
+
+
+def test_scan_tree_does_not_follow_directory_symlinks(tmp_path: Path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+    (outside / "leak.env").write_text(f"OPENAI_API_KEY={OPENAI_KEY}\n")
+    link = tmp_path / "linked"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):  # pragma: no cover - Windows privileges
+        pytest.skip("symlinks are not supported on this platform")
+
+    try:
+        assert scan_tree(tmp_path) == []
+    finally:
+        link.unlink()
+        (outside / "leak.env").unlink()
+        outside.rmdir()
 
 
 # ── WorkspaceTools modes ────────────────────────────────────────────────────
