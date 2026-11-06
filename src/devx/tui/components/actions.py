@@ -68,14 +68,16 @@ class ActionHandlers:
             message = "Cancellation requested."
             self.app._write(message)
         else:
-            message = "No active run to cancel."
+            message = "No active run."
             self.app._write(message)
+        self._notify(message)
         return message
 
     def clear_chat(self) -> None:
         chat = self.app.query_one("#chat-view", RichLog)
         chat.clear()
         self.app._transcript.clear()
+        self.app._latest_response = ""
         self.app._write("Chat cleared. Ready for your next task.")
 
     def copy_transcript(self) -> str:
@@ -89,40 +91,48 @@ class ActionHandlers:
         else:
             label = label or ""
             suffix = f" ({label})" if label else ""
-            message = f"● copied transcript to clipboard{suffix}"
-        self.app.query_one("#status-text", Static).update(message)
+            lines = len(content.splitlines())
+            message = f"● copied full transcript ({lines} lines){suffix}"
+        self._notify(message)
+        return message
+
+    def copy_latest_response(self) -> str:
+        from devx.tui.components.modals import copy_to_clipboard
+
+        content = getattr(self.app, "_latest_response", "")
+        if not content:
+            message = "● response copy failed: no latest response is available."
+            self._notify(message)
+            return message
+        try:
+            label = copy_to_clipboard(content, app=self.app)
+        except RuntimeError as exc:
+            message = f"● response copy failed: {exc}"
+        else:
+            lines = len(content.splitlines())
+            suffix = f" ({label})" if label else ""
+            message = f"● copied latest response ({lines} lines){suffix}"
+        self._notify(message)
         return message
 
     def copy_or_cancel(self) -> None:
-        """Handle Ctrl+C: cancel the active run, otherwise copy the transcript.
-
-        A second Ctrl+C within ``DOUBLE_CTRL_C_WINDOW`` (default 1.5 s) quits
-        the app entirely, so pressing Ctrl+C twice always lets the user exit.
-        """
+        """Cancel on first Ctrl+C; double Ctrl+C requests a confirmed quit."""
         now = time.monotonic()
-        app = self.app
-        window = float(getattr(app, "DOUBLE_CTRL_C_WINDOW", 1.5))
-        if getattr(app, "_ctrl_c_armed", False) and (now - getattr(app, "_ctrl_c_at", 0.0)) <= window:
-            app._ctrl_c_armed = False
-            app.action_quit()
+        window = float(getattr(self.app, "DOUBLE_CTRL_C_WINDOW", 1.5))
+        if getattr(self.app, "_ctrl_c_armed", False) and (
+            now - getattr(self.app, "_ctrl_c_at", 0.0)
+        ) <= window:
+            self.app._ctrl_c_armed = False
+            request_quit = getattr(self.app, "request_quit_confirmation", None)
+            if callable(request_quit):
+                request_quit()
             return
-        app._ctrl_c_at = now
-        app._ctrl_c_armed = True
-        if getattr(app, "_run_active", False):
-            message = self.cancel_run()
-        else:
-            message = self.copy_transcript()
-        self._set_status(f"{message} — press Ctrl+C again to quit")
+        self.app._ctrl_c_at = now
+        self.app._ctrl_c_armed = True
+        self.cancel_run()
         self._schedule_disarm(window)
 
-    def _set_status(self, message: str) -> None:
-        try:
-            self.app.query_one("#status-text", Static).update(message)
-        except Exception:
-            pass
-
     def _schedule_disarm(self, window: float) -> None:
-        """Disarm the double-press window once it expires (real apps only)."""
         try:
             set_timer = getattr(self.app, "set_timer", None)
             if callable(set_timer):
@@ -131,10 +141,72 @@ class ActionHandlers:
             pass
 
     def _disarm_ctrl_c(self) -> None:
+        self.app._ctrl_c_armed = False
+
+    def paste_clipboard(self) -> str:
+        from devx.util.clipboard import read_from_clipboard
+
         try:
-            self.app._ctrl_c_armed = False
+            content = read_from_clipboard()
+        except RuntimeError as exc:
+            message = f"● paste failed: {exc}"
+            self._notify(message)
+            return message
+        if not content:
+            message = "● paste failed: clipboard is empty."
+            self._notify(message)
+            return message
+        try:
+            input_widget = self.app.query_one("#input-bar")
+            input_widget.value = content
+        except Exception as exc:
+            message = f"● paste failed: {exc}"
+        else:
+            message = f"● pasted clipboard ({len(content)} characters)"
+        self._notify(message)
+        return message
+
+    def export_transcript(self, destination: str) -> str:
+        from pathlib import Path
+
+        destination = destination.strip()
+        if not destination:
+            message = "● export failed: provide a path, for example /export notes.md"
+            self._notify(message)
+            self.app._write(message)
+            return message
+        try:
+            path = Path(destination)
+            if path.parent != Path("."):
+                path.parent.mkdir(parents=True, exist_ok=True)
+            metadata = (
+                f"# devx transcript\n\n"
+                f"- Workspace: {getattr(self.app, '_workspace', '')}\n"
+                f"- Session: {getattr(self.app, 'session_id', '')}\n\n"
+            )
+            path.write_text(metadata + "\n\n".join(self.app._transcript) + "\n", encoding="utf-8")
+        except (OSError, ValueError) as exc:
+            message = f"● export failed: {exc}"
+        else:
+            message = f"● exported transcript to {path}"
+        self._notify(message)
+        self.app._write(message)
+        return message
+
+    def _set_status(self, message: str) -> None:
+        try:
+            self.app.query_one("#status-text", Static).update(message)
         except Exception:
             pass
+
+    def _notify(self, message: str) -> None:
+        notify = getattr(self.app, "_notify", None)
+        if callable(notify):
+            notify(message)
+            return
+        # Lightweight test doubles and pre-mount callers may not expose the
+        # notification widget yet.
+        self._set_status(message)
 
     def open_setup(self) -> None:
         from devx.config import Settings
@@ -158,6 +230,9 @@ class ActionHandlers:
         except TypeError:
             settings = Settings.load()
         self.app._workspace = settings.workspace
+        update_workspace = getattr(self.app, "update_workspace_status", None)
+        if callable(update_workspace):
+            update_workspace()
         self.app.update_model_status()
         self.app._write(f"Configuration reloaded for future runs: {settings.provider} / {settings.model}")
 
@@ -196,6 +271,9 @@ class ActionHandlers:
         except TypeError:
             settings = Settings.load()
         self.app._workspace = settings.workspace
+        update_workspace = getattr(self.app, "update_workspace_status", None)
+        if callable(update_workspace):
+            update_workspace()
         self.app.update_model_status()
         self.app._write(
             f"Configuration reset to defaults: {settings.provider} / {settings.model}\n"
@@ -223,7 +301,7 @@ class ActionHandlers:
             self.app.query_one("#status-text", Static).update(f"● agent: {requested}")
 
     def set_mode(self, requested: str) -> None:
-        from devx.config import Settings
+        from devx.configuration import UserConfig
         requested = requested.strip().lower()
         valid_modes = {"architect", "code", "review", "ask"}
         if not requested:
@@ -233,9 +311,12 @@ class ActionHandlers:
         if requested not in valid_modes:
             self.app._write(f"Invalid mode: {requested}. Choose one of: {', '.join(sorted(valid_modes))}")
             return
+        try:
+            UserConfig().set_mode(requested)
+        except Exception as exc:
+            self.app._write(f"Unable to save mode: {exc}")
+            return
         self.app._mode = requested
-        settings = Settings.load()
-        object.__setattr__(settings, "mode", requested)
         self.app.query_one("#status-text", Static).update(f"● mode: {requested}")
         self.app._write(f"Switched operational mode to: {requested}")
 
@@ -276,6 +357,9 @@ class ActionHandlers:
             self.app._remote_backend = backend
             self.app._remote_ssh = uri
             object.__setattr__(settings, "remote_ssh", uri)
+            update_workspace = getattr(self.app, "update_workspace_status", None)
+            if callable(update_workspace):
+                update_workspace()
             self.app.query_one("#status-text", Static).update(f"● remote: {cfg.host}:{cfg.remote_path}")
             self.app._write(f"Connected remote SSH workspace: {cfg.username}@{cfg.host}:{cfg.remote_path}")
         except Exception as exc:
@@ -292,6 +376,9 @@ class ActionHandlers:
         self.app._remote_ssh = ""
         settings = Settings.load()
         object.__setattr__(settings, "remote_ssh", "")
+        update_workspace = getattr(self.app, "update_workspace_status", None)
+        if callable(update_workspace):
+            update_workspace()
         self.app.query_one("#status-text", Static).update("● ready")
         self.app._write("Disconnected remote workspace. Reverted to local workspace.")
 

@@ -90,7 +90,13 @@ class SessionManager:
         from pathlib import Path
         source = source.strip()
         try:
-            self.app.session_id = SessionStore(Settings.load().session_db).import_session(Path(source))
+            imported_id = SessionStore(Settings.load().session_db).import_session(Path(source))
+            self.app.session_id = imported_id
+            self.switch_session(imported_id)
+            # Keep the imported identifier even when a backend returns a
+            # session record with a legacy/original id during hydration.
+            self.app.session_id = imported_id
+            self.app.query_one("#session-text", Static).update(f"session: {imported_id}")
             self.app._write(f"Imported session: {self.app.session_id}")
         except (OSError, TypeError, ValueError, KeyError, sqlite3.Error) as exc:
             self.app._write(f"Import failed: {exc}")

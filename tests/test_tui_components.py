@@ -35,6 +35,14 @@ class FakeWidget:
     def write(self, line):
         self._lines.append(str(line))
 
+    @property
+    def value(self):
+        return self._value
+
+    @value.setter
+    def value(self, val):
+        self._value = val
+
 
 class FakeRunner:
     def __init__(self):
@@ -98,6 +106,10 @@ class FakeApp:
         self._running = value
 
     def action_quit(self):
+        self.quit_calls += 1
+        self._written.append("quit")
+
+    def request_quit_confirmation(self):
         self.quit_calls += 1
         self._written.append("quit")
 
@@ -589,6 +601,8 @@ class TestSessionManager:
 
         SessionManager(fake_app).import_session("in.json")
         assert fake_app.session_id == "imported-1"
+        assert fake_app._transcript == ["user: hi", "x: nope"]
+        assert fake_app.query_one("#session-text")._value == "session: imported-1"
         assert fake_app._written[-1] == "Imported session: imported-1"
 
     def test_import_session_error(self, fake_app, monkeypatch, tmp_path, stub_session_store):
@@ -604,11 +618,27 @@ class TestSessionManager:
 # ── ActionHandlers ───────────────────────────────────────────────────────
 
 class TestActionHandlers:
+    def test_set_mode_persists_and_updates_active_mode(self, fake_app, monkeypatch):
+        from devx.tui.components.actions import ActionHandlers
+
+        saved: list[str] = []
+
+        def save_mode(_self, mode: str) -> None:
+            saved.append(mode)
+
+        monkeypatch.setattr("devx.configuration.UserConfig.set_mode", save_mode)
+        ActionHandlers(fake_app).set_mode("review")
+
+        assert saved == ["review"]
+        assert fake_app._mode == "review"
+        assert fake_app.query_one("#status-text")._value == "● mode: review"
+        assert fake_app._written[-1] == "Switched operational mode to: review"
+
     def test_cancel_run_no_active(self, fake_app):
         from devx.tui.components.actions import ActionHandlers
 
         ActionHandlers(fake_app).cancel_run()
-        assert fake_app._written[-1] == "No active run to cancel."
+        assert fake_app._written[-1] == "No active run."
 
     def test_cancel_run_active(self, fake_app):
         from devx.tui.components.actions import ActionHandlers
@@ -636,7 +666,7 @@ class TestActionHandlers:
         from devx.tui.components.actions import ActionHandlers
 
         ActionHandlers(fake_app).copy_transcript()
-        assert fake_app.query_one("#status-text")._value == "● copied transcript to clipboard"
+        assert fake_app.query_one("#status-text")._value == "● copied full transcript (1 lines)"
 
     def test_copy_transcript_empty_errors(self, fake_app):
         from devx.tui.components.actions import ActionHandlers
@@ -644,24 +674,25 @@ class TestActionHandlers:
         ActionHandlers(fake_app).copy_transcript()
         assert "copy failed" in fake_app.query_one("#status-text")._value
 
-    def test_copy_or_cancel_copies_when_idle(self, fake_app, monkeypatch):
+    def test_copy_transcript_invokes_clipboard(self, fake_app, monkeypatch):
+        copied: list[str] = []
         monkeypatch.setattr(
-            "devx.tui.components.modals.copy_to_clipboard", lambda text, app=None: None
+            "devx.tui.components.modals.copy_to_clipboard",
+            lambda text, app=None: copied.append(text) or None,
         )
-        fake_app._transcript = ["x"]
+        fake_app._transcript = ["alpha", "beta"]
         from devx.tui.components.actions import ActionHandlers
 
-        ActionHandlers(fake_app).copy_or_cancel()
-        assert "● copied transcript to clipboard" in fake_app.query_one("#status-text")._value
-        assert fake_app._ctrl_c_armed is True
-        assert fake_app._ctrl_c_at > 0.0
+        message = ActionHandlers(fake_app).copy_transcript()
+        assert copied == ["alpha\nbeta"]
+        assert message == "● copied full transcript (2 lines)"
+        assert fake_app.query_one("#status-text")._value == message
 
-    def test_copy_or_cancel_empty_transcript_shows_copy_failure(self, fake_app):
+    def test_copy_transcript_empty_reports_failure(self, fake_app):
         from devx.tui.components.actions import ActionHandlers
 
-        ActionHandlers(fake_app).copy_or_cancel()
+        ActionHandlers(fake_app).copy_transcript()
         assert "copy failed" in fake_app.query_one("#status-text")._value
-        assert fake_app._ctrl_c_armed is True
 
     def test_copy_or_cancel_cancels_active_run(self, fake_app):
         cancellation = FakeCancellation()
@@ -1008,6 +1039,96 @@ class TestActionHandlers:
         assert fake_app.query_one("#status-text")._value == "● ready"
 
 
+# ── New feature coverage ─────────────────────────────────────────────────
+
+    def test_copy_latest_response(self, fake_app, monkeypatch):
+        copied: list[str] = []
+        monkeypatch.setattr(
+            "devx.tui.components.modals.copy_to_clipboard",
+            lambda text, app=None: copied.append(text) or None,
+        )
+        fake_app._latest_response = "first line\nsecond line"
+        from devx.tui.components.actions import ActionHandlers
+
+        message = ActionHandlers(fake_app).copy_latest_response()
+        assert copied == ["first line\nsecond line"]
+        assert message == "● copied latest response (2 lines)"
+        assert fake_app.query_one("#status-text")._value == message
+
+    def test_copy_latest_response_missing(self, fake_app):
+        from devx.tui.components.actions import ActionHandlers
+
+        message = ActionHandlers(fake_app).copy_latest_response()
+        assert "no latest response is available" in message
+
+    def test_paste_clipboard_populates_input(self, fake_app, monkeypatch):
+        monkeypatch.setattr("devx.util.clipboard.read_from_clipboard", lambda: "pasted text")
+        from devx.tui.components.actions import ActionHandlers
+
+        message = ActionHandlers(fake_app).paste_clipboard()
+        assert fake_app.query_one("#input-bar").value == "pasted text"
+        assert "pasted clipboard (11 characters)" in message
+
+    def test_paste_clipboard_empty(self, fake_app, monkeypatch):
+        monkeypatch.setattr("devx.util.clipboard.read_from_clipboard", lambda: "")
+        from devx.tui.components.actions import ActionHandlers
+
+        message = ActionHandlers(fake_app).paste_clipboard()
+        assert "clipboard is empty" in message
+
+    def test_paste_clipboard_error(self, fake_app, monkeypatch):
+        monkeypatch.setattr(
+            "devx.util.clipboard.read_from_clipboard",
+            lambda: (_ for _ in ()).throw(RuntimeError("No clipboard reader found.")),
+        )
+        from devx.tui.components.actions import ActionHandlers
+
+        message = ActionHandlers(fake_app).paste_clipboard()
+        assert "paste failed" in message
+
+    def test_export_transcript_writes_metadata(self, fake_app, monkeypatch, tmp_path):
+        fake_app._workspace = tmp_path
+        fake_app.session_id = "sess-1"
+        fake_app._transcript = ["user: hi", "agent: hello"]
+        from devx.tui.components.actions import ActionHandlers
+
+        destination = str(tmp_path / "transcript.md")
+        message = ActionHandlers(fake_app).export_transcript(destination)
+        assert "exported transcript to" in message
+        content = Path(destination).read_text(encoding="utf-8")
+        assert "# devx transcript" in content
+        assert f"- Workspace: {tmp_path}" in content
+        assert "- Session: sess-1" in content
+        assert "user: hi" in content
+        assert "agent: hello" in content
+
+    def test_export_transcript_missing_path(self, fake_app):
+        from devx.tui.components.actions import ActionHandlers
+
+        message = ActionHandlers(fake_app).export_transcript("")
+        assert "provide a path" in message
+
+    def test_quit_confirmation_modal_confirms_and_cancels(self):
+        from devx.tui.components.modals import QuitConfirmationModal
+
+        class _Button:
+            def __init__(self, id):
+                self.id = id
+
+        confirmed: list[bool] = []
+
+        modal = QuitConfirmationModal(lambda c: confirmed.append(c))
+        modal.dismiss = lambda c: None  # type: ignore[method-assign]
+        modal.on_button_pressed(SimpleNamespace(button=_Button("quit-confirm")))
+        assert confirmed == [True]
+
+        confirmed.clear()
+        modal = QuitConfirmationModal(lambda c: confirmed.append(c))
+        modal.dismiss = lambda c: None  # type: ignore[method-assign]
+        modal.on_button_pressed(SimpleNamespace(button=_Button("quit-cancel")))
+        assert confirmed == [False]
+
+
 # ── copy_to_clipboard (OS-default clipboard) ─────────────────────────────
 
 class TestCopyToClipboard:
@@ -1111,6 +1232,32 @@ class TestCopyToClipboard:
 
         with pytest.raises(RuntimeError, match="No clipboard utility found"):
             copy_to_clipboard("hello")
+
+
+# ── read_from_clipboard ──────────────────────────────────────────────────
+
+class TestClipboardRead:
+    def test_read_returns_native_content(self, monkeypatch):
+        monkeypatch.setattr("devx.util.clipboard.os_native_read", lambda: "native text")
+        monkeypatch.setattr("devx.util.clipboard.tk_clipboard_read", lambda: None)
+        from devx.util.clipboard import read_from_clipboard
+
+        assert read_from_clipboard() == "native text"
+
+    def test_read_falls_back_to_tkinter(self, monkeypatch):
+        monkeypatch.setattr("devx.util.clipboard.os_native_read", lambda: None)
+        monkeypatch.setattr("devx.util.clipboard.tk_clipboard_read", lambda: "tk text")
+        from devx.util.clipboard import read_from_clipboard
+
+        assert read_from_clipboard() == "tk text"
+
+    def test_read_raises_when_unavailable(self, monkeypatch):
+        monkeypatch.setattr("devx.util.clipboard.os_native_read", lambda: None)
+        monkeypatch.setattr("devx.util.clipboard.tk_clipboard_read", lambda: None)
+        from devx.util.clipboard import read_from_clipboard
+
+        with pytest.raises(RuntimeError, match="No clipboard reader found"):
+            read_from_clipboard()
 
 
 # ── ProviderSetupModal helpers ───────────────────────────────────────────

@@ -118,6 +118,28 @@ class ApprovalModal(ModalScreen):
         self.dismiss(decision)
 
 
+class QuitConfirmationModal(ModalScreen):
+    """Confirm leaving the TUI so an accidental quit does not lose context."""
+
+    def __init__(self, done: Callable[[bool], None] | None = None):
+        super().__init__()
+        self.done = done
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="quit-dialog"):
+            yield Label("Quit devx?", id="quit-title")
+            yield Static("The current TUI session will be closed.", id="quit-message")
+            with Horizontal(classes="dialog-actions"):
+                yield Button("Quit", id="quit-confirm")
+                yield Button("Cancel", id="quit-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        confirmed = event.button.id == "quit-confirm"
+        if self.done is not None:
+            self.done(confirmed)
+        self.dismiss(confirmed)
+
+
 class SecretInputModal(ModalScreen):
     """Modal for entering an API key (input is masked)."""
 

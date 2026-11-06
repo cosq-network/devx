@@ -69,6 +69,7 @@ Desktop.ini
 *.log
 *.tmp
 *.temp
+pytest-temp/
 tmp/
 temp/
 

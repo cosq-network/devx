@@ -11,6 +11,7 @@ from devx.tui.components.commands import HelpSystem, ProviderManager, ModelManag
 from devx.tui.components.session import SessionManager
 from devx.tui.components.actions import ActionHandlers
 from devx.tui.components.runner import AgentRunner
+from devx.tui.components.input import PromptInput
 
 __all__ = [
     "ApprovalModal",
@@ -24,4 +25,5 @@ __all__ = [
     "SessionManager",
     "ActionHandlers",
     "AgentRunner",
+    "PromptInput",
 ]

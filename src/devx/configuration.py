@@ -118,6 +118,12 @@ class UserConfig:
             raise ConfigurationError("Model identifier must not be empty")
         self.update({"DEVX_MODEL": model.strip()})
 
+    def set_mode(self, mode: str) -> None:
+        value = mode.strip().lower()
+        if value not in {"architect", "code", "review", "ask"}:
+            raise ConfigurationError(f"Invalid mode: {mode}")
+        self.update({"DEVX_MODE": value})
+
     def set_api_key(self, api_key: str) -> None:
         if not api_key.strip():
             raise ConfigurationError("API key must not be empty")
@@ -134,6 +140,8 @@ class UserConfig:
             "DEV_BASE_URL",
             "DEVX_API_KEY",
             "DEV_API_KEY",
+            "DEVX_MODE",
+            "DEV_MODE",
         ),
     ) -> None:
         """Remove provider, model, and credential configuration keys."""

@@ -504,8 +504,9 @@ devx tui --session local-devx
 ```
 
 The prompt is focused automatically when the TUI starts. Slash commands and
-`@` workspace mentions offer autocomplete suggestions; press the right arrow
-to accept one. Press `F1` for help,
+`@` workspace mentions offer autocomplete suggestions; press `Tab` or the right
+arrow to accept one. When no suggestion is visible, `Tab` moves focus normally.
+Press `F1` for help,
 `Ctrl+L` to clear the chat, `F2` or `Ctrl+Insert` to copy the transcript to the
 OS clipboard, or `Ctrl+C` to cancel the active run (copy the transcript when
 idle). Press `Ctrl+C` twice to quit, or use `/copy`; it copies the full

@@ -1,4 +1,4 @@
-"""OS-default clipboard copying with terminal fallbacks.
+"""OS-default clipboard copying and reading with terminal fallbacks.
 
 Priority order:
 
@@ -54,6 +54,45 @@ def os_native_copy(text: str, timeout: float = 5.0) -> bool:
     return False
 
 
+def _native_read_commands() -> list[list[str]]:
+    """Platform-native clipboard read commands, best utility first."""
+    system = platform.system()
+    if system == "Windows":
+        return [["powershell.exe", "-NoProfile", "-Command", "Get-Clipboard"]]
+    if system == "Darwin":
+        return [["pbpaste"]]
+    if system == "Linux" or system in {"FreeBSD", "OpenBSD", "NetBSD"}:
+        return [
+            ["wl-paste"],
+            ["xclip", "-selection", "clipboard", "-o"],
+            ["xsel", "--clipboard", "--output"],
+        ]
+    return []
+
+
+def os_native_read(timeout: float = 5.0) -> str | None:
+    """Read the clipboard using the first available native utility.
+
+    ``None`` means no reader succeeded; an empty string is a valid empty
+    clipboard and is deliberately preserved for callers.
+    """
+    for command in _native_read_commands():
+        if not shutil.which(command[0]):
+            continue
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=timeout,
+            )
+            return result.stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+    return None
+
+
 def osc52_encode(text: str) -> str:
     """Encode *text* as an OSC 52 terminal clipboard write sequence."""
     payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
@@ -78,6 +117,44 @@ def tk_clipboard_copy(text: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def tk_clipboard_read() -> str | None:
+    """Read via stdlib ``tkinter`` as an optional final fallback."""
+    try:
+        import tkinter
+    except Exception:
+        return None
+    try:
+        root = tkinter.Tk()
+        root.withdraw()
+        try:
+            root.update()
+            return root.clipboard_get()
+        finally:
+            root.destroy()
+    except Exception:
+        return None
+
+
+def read_from_clipboard() -> str:
+    """Read clipboard text or raise an actionable, platform-specific error."""
+    native = os_native_read()
+    if native is not None:
+        return native
+    fallback = tk_clipboard_read()
+    if fallback is not None:
+        return fallback
+    system = platform.system()
+    if system == "Linux":
+        hint = " Install wl-clipboard, xclip, or xsel."
+    elif system == "Windows":
+        hint = " PowerShell clipboard access was unavailable."
+    elif system == "Darwin":
+        hint = " The pbpaste utility was unavailable."
+    else:
+        hint = ""
+    raise RuntimeError(f"No clipboard reader found.{hint}")
 
 
 def copy_to_clipboard(text: str, *, app: "App | None" = None) -> str:

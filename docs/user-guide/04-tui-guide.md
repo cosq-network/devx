@@ -40,7 +40,7 @@ The TUI is organized into four primary functional zones:
 │ [Approve Write: src/auth.py] (Modal Dialogue)                          │
 │                                                                        │
 ├────────────────────────────────────────────────────────────────────────┤
-│ Context: 12k / 200k tokens | ● copied transcript to clipboard (clip)   │ Status Bar
+│ Context: 12k / 200k tokens | ● copied full transcript (3 lines)(clip) │ Status Bar
 ├────────────────────────────────────────────────────────────────────────┤
 │ > @src/auth.py _                                                       │ Input Prompt
 └────────────────────────────────────────────────────────────────────────┘
@@ -57,7 +57,7 @@ The TUI is organized into four primary functional zones:
    - Live test execution outputs and linter reports.
 3. **Status Bar**:
    - Token consumption indicators.
-   - Clipboard action notifications (e.g. `● copied transcript to clipboard (clip)`).
+   - Clipboard action notifications (e.g. `● copied full transcript (3 lines)(clip)`).
    - Execution state indicators (`Idle`, `Planning`, `Coding`, `Running Tests`).
 4. **Input Prompt**:
    - Multi-line text input.
@@ -164,12 +164,12 @@ Slash commands provide instant control over configuration, sessions, models, and
 | Shortcut | Action | Details |
 |---|---|---|
 | **F1** | Open Help | Opens the comprehensive in-TUI help documentation |
-| **Ctrl+C** *(single)* | Cancel Run / Copy | Cancels active run if executing; copies transcript if idle |
-| **Ctrl+C** *(twice)* | Safe Quit | Pressing `Ctrl+C` twice within 1.5 seconds quits the application |
+| **Ctrl+C** *(single)* | Cancel Run | Cancels an active run; does nothing when idle (transcript copy is `F2`/`Ctrl+Shift+C`/`/copy`) |
+| **Ctrl+C** *(twice)* | Safe Quit | Pressing `Ctrl+C` twice within 1.5 seconds opens a quit-confirmation dialog; confirming quits the application |
 | **Ctrl+Q** | Quit | Directly exits the TUI and executes remote connection cleanups |
 | **Ctrl+L** | Clear Transcript | Clears all scrollback text from the active transcript view |
 | **F2** / **Ctrl+Insert** | Copy Transcript | Copies transcript to the system clipboard |
-| **Right Arrow** / **Tab** | Accept Completion | Completes the selected suggestion in `@` or `/` autocomplete popups |
+| **Right Arrow** / **Tab** | Accept Completion | Completes the selected suggestion in `@` or `/` autocomplete popups; Tab moves focus normally when none is visible |
 | **Escape** | Dismiss Modal | Closes non-mandatory modal dialogs |
 
 ---
@@ -206,7 +206,7 @@ Whenever the agent proposes writing code or executing a command, execution pause
 
 ```mermaid
 graph TD
-    COPY[Copy Action F2 / /copy / Ctrl+C] --> OS[1. OS-Native Utility]
+    COPY[Copy Action F2 / /copy] --> OS[1. OS-Native Utility]
     OS -->|Windows| CLIP[clip.exe]
     OS -->|macOS| PBCOPY[pbcopy]
     OS -->|Linux Wayland| WLCOPY[wl-copy]
@@ -226,7 +226,7 @@ graph TD
    - Standard library clipboard fallback if GUI bindings are available.
 
 The status bar displays which mechanism succeeded:
-`● copied transcript to clipboard (clip)` or `● copied transcript to clipboard (osc52)`.
+`● copied full transcript (N lines)(clip)` or `● copied full transcript (N lines)(osc52)`.
 
 ---
 

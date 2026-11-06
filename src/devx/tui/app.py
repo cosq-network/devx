@@ -52,6 +52,7 @@ from devx.tui.components import (
     SessionManager,
     ActionHandlers,
     AgentRunner,
+    PromptInput,
 )
 
 
@@ -62,14 +63,15 @@ class DevTUI(App):
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
         ("f1", "show_help", "Help"),
         ("ctrl+l", "clear_chat", "Clear"),
-        ("ctrl+shift+c", "copy_transcript", "Copy"),
-        ("ctrl+insert", "copy_transcript", "Copy"),
-        ("f2", "copy_transcript", "Copy"),
-        ("ctrl+c", "copy_or_cancel", "Copy/Cancel"),
+        ("ctrl+shift+c", "copy_transcript", "Copy transcript"),
+        ("ctrl+insert", "copy_transcript", "Copy transcript"),
+        ("f2", "copy_transcript", "Copy transcript"),
+        ("f3", "copy_latest_response", "Copy response"),
+        ("ctrl+c", "copy_or_cancel", "Cancel"),
         ("ctrl+q", "quit", "Quit"),
+        ("escape", "cancel", "Cancel run"),
         ("ctrl+p", "open_provider_selector", "Provider"),
     ]
-    # Seconds between two Ctrl+C presses that trigger an app quit.
     DOUBLE_CTRL_C_WINDOW: ClassVar[float] = 1.5
     CSS = """
     $primary: #303030;
@@ -110,7 +112,8 @@ class DevTUI(App):
     #approval-dialog,
     #secret-dialog,
     #plan-preview-dialog,
-    #provider-selector {
+    #provider-selector,
+    #quit-dialog {
         width: 72;
         max-width: 90%;
         height: auto;
@@ -122,6 +125,9 @@ class DevTUI(App):
     }
     #approval-dialog {
         width: 78;
+    }
+    #quit-dialog {
+        width: 54;
     }
     #approval-dialog > Label:first-child,
     #plan-preview-dialog > Label:first-child,
@@ -187,20 +193,6 @@ class DevTUI(App):
         background: #111111;
         scrollbar-size: 1 1;
     }
-    #log-view {
-        height: 6;
-        width: 100%;
-        border: none;
-        padding: 0 2;
-        margin: 0;
-        background: #0a0a0a;
-        scrollbar-size: 1 1;
-        color: #999999;
-        text-style: dim;
-    }
-    #log-view:focus {
-        border: none;
-    }
     #input-bar {
         height: 3;
         width: 100%;
@@ -208,6 +200,16 @@ class DevTUI(App):
         padding: 1 2;
         border: none;
         background: #1b1b1b;
+    }
+    #workspace-banner {
+        height: 1;
+        width: 100%;
+        padding: 0 2;
+        background: #171717;
+        color: #d0d0d0;
+        content-align: left middle;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
     #status-bar {
         height: 1;
@@ -219,12 +221,22 @@ class DevTUI(App):
     }
     #status-bar .status-item {
         width: 1fr;
+        content-align: left middle;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
     #status-text {
         color: #d0d0d0;
     }
     #model-text {
         color: #bdbdbd;
+    }
+    #workspace-text {
+        width: 2fr;
+        color: #bdbdbd;
+    }
+    #session-text {
+        width: 1fr;
     }
     #progress-bar {
         width: 4;
@@ -296,15 +308,18 @@ class DevTUI(App):
             _loaded = Settings.load()
             self._workspace = _loaded.workspace
             self._remote_ssh = _loaded.remote_ssh or ""
+            self._mode = _loaded.mode
         except (OSError, ValueError):
             self._workspace = Path.cwd()
+            self._mode = "code"
         self._cancellation: CancellationToken | None = None
         self._requested_agent = "supervisor"
         self._transcript: list[str] = []
+        self._latest_response = ""
         self._run_active = False
-        # Double-press Ctrl+C-to-quit state (see DOUBLE_CTRL_C_WINDOW).
         self._ctrl_c_armed = False
         self._ctrl_c_at = 0.0
+        self._approval_waiters: set[object] = set()
 
         # Initialize component managers
         self.help = HelpSystem(self)
@@ -314,7 +329,13 @@ class DevTUI(App):
         self.actions = ActionHandlers(self)
         self.runner = AgentRunner(self)
 
-    def action_quit(self) -> None:
+    def _quit_now(self) -> None:
+        for waiter in tuple(self._approval_waiters):
+            try:
+                waiter.set()  # type: ignore[union-attr]
+            except Exception:
+                pass
+        self._approval_waiters.clear()
         if getattr(self, "_remote_backend", None) is not None:
             try:
                 self._remote_backend.close()
@@ -322,6 +343,33 @@ class DevTUI(App):
                 pass
             self._remote_backend = None
         self.exit()
+
+    def request_quit_confirmation(self) -> None:
+        from devx.tui.components.modals import QuitConfirmationModal
+
+        def finish(confirmed: bool) -> None:
+            if confirmed:
+                self._quit_now()
+
+        self.push_screen(QuitConfirmationModal(finish))
+
+    def action_quit(self) -> None:
+        """Request confirmation before quitting from a keyboard binding/modal."""
+        self.request_quit_confirmation()
+
+    def action_cancel(self) -> None:
+        self.actions.cancel_run()
+
+    def _call_on_ui_thread(self, callback, *args, **kwargs):
+        """Run a UI mutation on Textual's app thread when called remotely."""
+        call_from_thread = getattr(self, "call_from_thread", None)
+        if callable(call_from_thread):
+            try:
+                return call_from_thread(callback, *args, **kwargs)
+            except RuntimeError:
+                # Already on the app thread (or running under a lightweight test double).
+                pass
+        return callback(*args, **kwargs)
 
     @property
     def _model_choices(self) -> list[str]:
@@ -354,13 +402,8 @@ class DevTUI(App):
                 auto_scroll=True,
                 markup=True,
             )
-            yield RichLog(
-                id="log-view",
-                wrap=True,
-                highlight=True,
-                auto_scroll=True,
-            )
-            yield Input(
+            yield Static(f"cwd: {self._workspace_display()}", id="workspace-banner")
+            yield PromptInput(
                 placeholder="Enter a task... use /commands or @file mentions",
                 suggester=CommandMentionSuggester(self._workspace),
                 id="input-bar",
@@ -368,9 +411,29 @@ class DevTUI(App):
             with Horizontal(id="status-bar"):
                 yield ProgressBar(id="progress-bar", total=None, show_bar=True, show_percentage=False, show_eta=False)
                 yield Static("● ready", id="status-text", classes="status-item")
+                yield Static("", id="notice-text", classes="status-item")
                 yield Static("openai:gpt-4o", id="model-text", classes="status-item")
+                yield Static(f"dir: {self._workspace_display()}", id="workspace-text", classes="status-item")
                 yield Static(f"session: {self.session_id}", id="session-text", classes="status-item")
-                yield Static("hint: /help • /setup • /model", id="hint-text", classes="status-item")
+
+    def _workspace_display(self) -> str:
+        """Return the active local or remote workspace for the status bar."""
+        remote = getattr(self, "_remote_ssh", "")
+        if remote and getattr(self, "_remote_backend", None) is not None:
+            return str(remote)
+        return str(getattr(self, "_workspace", Path.cwd()))
+
+    def update_workspace_status(self) -> None:
+        try:
+            workspace = self.query_one("#workspace-text", Static)
+            workspace.update(f"dir: {self._workspace_display()}")
+        except Exception:
+            pass
+        try:
+            banner = self.query_one("#workspace-banner", Static)
+            banner.update(f"cwd: {self._workspace_display()}")
+        except Exception:
+            pass
 
     def update_model_status(self) -> None:
         try:
@@ -400,6 +463,7 @@ class DevTUI(App):
         return settings.provider != "ollama" and settings.api_key in {"", "sk-placeholder"}
 
     def _finish_setup(self) -> None:
+        self.update_workspace_status()
         self.update_model_status()
         self.query_one("#input-bar", Input).focus()
         self._write("Ready. Type a task or /help for commands.")
@@ -408,16 +472,11 @@ class DevTUI(App):
         from devx.config import Settings
 
         settings = Settings.load()
+        self._workspace = settings.workspace
+        self.update_workspace_status()
         self.update_model_status()
         self._write(f"Configuration saved: {settings.provider} / {settings.model}")
         self.query_one("#input-bar", Input).focus()
-
-    def _log(self, message: str) -> None:
-        try:
-            log = self.query_one("#log-view", RichLog)
-            log.write(message)
-        except Exception:
-            pass
 
     def _set_running(self, active: bool) -> None:
         progress = self.query_one("#progress-bar", ProgressBar)
@@ -437,6 +496,21 @@ class DevTUI(App):
             if hasattr(self, "_progress_interval") and self._progress_interval:
                 self._progress_interval.stop()
                 self._progress_interval = None
+
+    def _notify(self, message: str) -> None:
+        """Show a short-lived clipboard/export notification independently of run state."""
+        try:
+            notice = self.query_one("#notice-text", Static)
+            notice.update(message)
+            timer = getattr(self, "set_timer", None)
+            if callable(timer):
+                timer(4.0, lambda: notice.update(""))
+        except Exception:
+            # Keeps actions usable before compose/mount and with small test doubles.
+            try:
+                self.query_one("#status-text", Static).update(message)
+            except Exception:
+                pass
 
     def _tick_progress(self) -> None:
         try:
@@ -471,6 +545,9 @@ class DevTUI(App):
     def action_copy_transcript(self) -> None:
         self.actions.copy_transcript()
 
+    def action_copy_latest_response(self) -> None:
+        self.actions.copy_latest_response()
+
     def action_copy_or_cancel(self) -> None:
         self.actions.copy_or_cancel()
 
@@ -488,8 +565,14 @@ class DevTUI(App):
         event.input.value = ""
         if not value:
             return
-        if value == "/exit":
-            self.action_quit()
+        if value == "/paste":
+            self.actions.paste_clipboard()
+        elif value == "/export" or value.startswith("/export "):
+            self.actions.export_transcript(value.partition(" ")[2])
+        elif value == "/copy last":
+            self.action_copy_latest_response()
+        elif value == "/exit":
+            self.request_quit_confirmation()
         elif value in {"/setup", "/configure"}:
             self.actions.open_setup()
         elif value == "/clear":

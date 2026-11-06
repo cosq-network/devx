@@ -16,7 +16,7 @@ def test_textual_app_smoke():
 
     async def run() -> None:
         async with DevxTUI().run_test() as pilot:
-            await pilot.press("h", "e", "l", "p", "enter")
+            await pilot.press("/", "h", "e", "l", "p", "enter")
             await pilot.pause()
 
     asyncio.run(run())
