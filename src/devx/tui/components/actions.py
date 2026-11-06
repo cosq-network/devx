@@ -126,6 +126,12 @@ class ActionHandlers:
             request_quit = getattr(self.app, "request_quit_confirmation", None)
             if callable(request_quit):
                 request_quit()
+            else:
+                action_quit = getattr(self.app, "action_quit", None)
+                if callable(action_quit):
+                    action_quit()
+                else:
+                    self._notify("● quit confirmation unavailable — press Ctrl+C again to quit")
             return
         self.app._ctrl_c_at = now
         self.app._ctrl_c_armed = True
@@ -147,7 +153,7 @@ class ActionHandlers:
         from devx.util.clipboard import read_from_clipboard
 
         try:
-            content = read_from_clipboard()
+            content = read_from_clipboard().rstrip("\n\r")
         except RuntimeError as exc:
             message = f"● paste failed: {exc}"
             self._notify(message)
@@ -177,8 +183,7 @@ class ActionHandlers:
             return message
         try:
             path = Path(destination)
-            if path.parent != Path("."):
-                path.parent.mkdir(parents=True, exist_ok=True)
+            path.parent.mkdir(parents=True, exist_ok=True)
             metadata = (
                 f"# devx transcript\n\n"
                 f"- Workspace: {getattr(self.app, '_workspace', '')}\n"

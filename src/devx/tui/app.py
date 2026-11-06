@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -320,6 +321,7 @@ class DevTUI(App):
         self._ctrl_c_armed = False
         self._ctrl_c_at = 0.0
         self._approval_waiters: set[object] = set()
+        self._approval_waiters_lock = threading.Lock()
 
         # Initialize component managers
         self.help = HelpSystem(self)
@@ -330,12 +332,14 @@ class DevTUI(App):
         self.runner = AgentRunner(self)
 
     def _quit_now(self) -> None:
-        for waiter in tuple(self._approval_waiters):
+        with self._approval_waiters_lock:
+            waiters = tuple(self._approval_waiters)
+            self._approval_waiters.clear()
+        for waiter in waiters:
             try:
                 waiter.set()  # type: ignore[union-attr]
             except Exception:
                 pass
-        self._approval_waiters.clear()
         if getattr(self, "_remote_backend", None) is not None:
             try:
                 self._remote_backend.close()

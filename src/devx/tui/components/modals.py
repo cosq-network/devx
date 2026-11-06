@@ -136,8 +136,12 @@ class QuitConfirmationModal(ModalScreen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         confirmed = event.button.id == "quit-confirm"
         if self.done is not None:
-            self.done(confirmed)
-        self.dismiss(confirmed)
+            try:
+                self.done(confirmed)
+            finally:
+                self.dismiss(confirmed)
+        else:
+            self.dismiss(confirmed)
 
 
 class SecretInputModal(ModalScreen):

@@ -34,7 +34,10 @@ class AgentRunner:
             return callback(*args, **kwargs)
 
         def set_status(message: str) -> None:
-            self.app.query_one("#status-text", Static).update(message)
+            try:
+                self.app.query_one("#status-text", Static).update(message)
+            except Exception:
+                pass
 
         def reset_response() -> None:
             self.app._latest_response = ""
@@ -45,7 +48,7 @@ class AgentRunner:
         def finalize_response(text: str) -> None:
             self.app._latest_response = text or ""
 
-        reset_response()
+        ui(reset_response)
         try:
             settings = Settings.load()
             if getattr(self.app, "_mode", ""):
@@ -72,8 +75,13 @@ class AgentRunner:
                 completed = threading.Event()
                 answer = {"value": ApprovalDecision.DENY}
                 waiters = getattr(self.app, "_approval_waiters", None)
+                waiters_lock = getattr(self.app, "_approval_waiters_lock", None)
                 if waiters is not None:
-                    waiters.add(completed)
+                    if waiters_lock is not None:
+                        with waiters_lock:
+                            waiters.add(completed)
+                    else:
+                        waiters.add(completed)
                 request = ApprovalRequest("tui", action, target, reason)
 
                 def finish(decision: ApprovalDecision) -> None:
@@ -91,7 +99,11 @@ class AgentRunner:
                     decision = answer["value"]
                 finally:
                     if waiters is not None:
-                        waiters.discard(completed)
+                        if waiters_lock is not None:
+                            with waiters_lock:
+                                waiters.discard(completed)
+                        else:
+                            waiters.discard(completed)
                 if decision == ApprovalDecision.CANCEL and self.app._cancellation:
                     self.app._cancellation.cancel()
                 return decision
@@ -104,7 +116,7 @@ class AgentRunner:
                 agent = event.get("agent", "")
                 if event_type == "token":
                     text = event.get("text", "")
-                    append_response(str(text))
+                    ui(append_response, str(text))
                     ui(self.app._write, text)
                 elif event_type == "agent_error":
                     error_msg = event.get("error", "Unknown error")
@@ -201,7 +213,7 @@ class AgentRunner:
                             result,
                             {"last_run_id": run_id},
                         )
-                    finalize_response(result.get("result", ""))
+                    ui(finalize_response, result.get("result", ""))
                     ui(self.app._write, result["result"])
             else:
                 # Direct execution mode
